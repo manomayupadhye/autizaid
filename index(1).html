@@ -1,0 +1,2226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Pause Point · Wearable Speech Simulation (Prototype)</title>
+<!--
+  PAUSE POINT · ASSISTIVE FACIAL WEARABLE — SPEECH-TO-KEYWORD SIMULATION
+  ----------------------------------------------------------------------
+  Prototype demonstration only. Not a clinically validated, diagnostic or
+  therapeutic tool. Single file: HTML + CSS + JS. Three.js r160 from jsDelivr.
+
+  File map
+    <style>                         UI styles (HUD, panels, Enter VR button)
+    <script id="wearable-core">     Speech pipeline + microphone input (NO Three.js;
+                                    independent of the 3D world, replaceable by an AI API)
+    <script type="module">          3D scene, characters, movement, VR, wearable display, settings
+
+  Host on any HTTPS static host (GitHub Pages works). Microphone + WebXR need HTTPS.
+-->
+<style>
+  :root{
+    --ui-scale:1;
+    --hud-bg:rgba(18,27,43,.86);
+    --hud-fg:#fff;
+    --hud-border:rgba(255,255,255,.22);
+    --accent:#8CC4F5;
+    --fade:.45s;
+    --font:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans",Arial,sans-serif;
+  }
+  body.hc{ --hud-bg:#000; --hud-border:#fff; }
+  html,body{margin:0;height:100%;overflow:hidden;background:#dcebf4;font-family:var(--font);}
+  #scene{display:block;width:100vw;height:100vh;outline:none;}
+  button{font-family:var(--font);}
+  .hud{position:fixed;z-index:20;color:var(--hud-fg);}
+
+  /* ---------- top-left status ---------- */
+  #status{top:12px;left:12px;display:flex;flex-direction:column;gap:6px;max-width:min(470px,60vw);}
+  .pill{background:var(--hud-bg);border:2px solid var(--hud-border);border-radius:14px;padding:8px 12px;font-size:14px;line-height:1.3;}
+  #modeBadge.live{border-color:#7fd39a}
+  #modeBadge.demo{border-color:#f2c26b}
+  #modeBadge b{letter-spacing:.04em}
+  #micBadge{display:flex;align-items:center;gap:8px;font-weight:600}
+  #micBadge .dot{width:12px;height:12px;border-radius:50%;background:#7b8597;flex:none}
+  #micBadge.on .dot{background:#ff7a6b;box-shadow:0 0 0 3px rgba(255,122,107,.25)}
+  #micBadge.on{border-color:#ff9b8f}
+  .meter{display:flex;gap:3px;align-items:flex-end;height:14px;margin-left:auto}
+  .meter i{display:block;width:5px;height:4px;background:#5b6577;border-radius:2px;transition:height .12s linear,background .12s}
+
+  /* ---------- toolbar ---------- */
+  #toolbar{top:12px;right:12px;display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;max-width:58vw;}
+  .tb{background:var(--hud-bg);color:#fff;border:2px solid var(--hud-border);border-radius:14px;padding:9px 13px;font-size:15px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:7px;}
+  .tb:hover{border-color:var(--accent)}
+  .tb[aria-pressed="true"]{border-color:var(--accent);background:#1e4d7d}
+  .tb:focus-visible,.panel button:focus-visible{outline:3px solid #ffd27a;outline-offset:2px}
+  .tb svg{width:18px;height:18px;flex:none}
+
+  /* ---------- pipeline strip (presenter view) ---------- */
+  #strip{top:112px;left:50%;transform:translateX(-50%);display:flex;gap:4px;align-items:center;font-size:12px;font-weight:700;letter-spacing:.03em}
+  #strip span{background:var(--hud-bg);border:2px solid var(--hud-border);border-radius:10px;padding:5px 8px;color:#c9d2e0;transition:background .25s,color .25s,border-color .25s}
+  #strip span.on{background:#2f6fb3;color:#fff;border-color:#9fd0ff}
+  #strip em{color:#2b3a52;font-style:normal;font-weight:800}
+  #guideHint{top:150px;left:50%;transform:translateX(-50%);display:none}
+
+  /* ---------- wearable keyword display (desktop) ---------- */
+  #wearableWrap{left:50%;bottom:70px;transform:translate(-50%,0);opacity:0;pointer-events:none;
+    transition:opacity var(--fade) ease, transform var(--fade) ease;}
+  body.anim-medium #wearableWrap{transform:translate(-50%,10px)}
+  #wearableWrap.show{opacity:1}
+  body.anim-medium #wearableWrap.show{transform:translate(-50%,0)}
+  #wearableCanvas{display:block;width:calc(430px * var(--ui-scale));max-width:94vw;height:auto;filter:drop-shadow(0 6px 18px rgba(0,0,0,.25));}
+  #wearableLabel{text-align:center;font-size:12px;font-weight:700;color:#24324a;letter-spacing:.08em;margin-bottom:4px;text-shadow:0 1px 0 rgba(255,255,255,.7)}
+  #kwControls{left:50%;bottom:14px;transform:translateX(-50%);display:flex;gap:8px}
+  #kwControls .tb{padding:7px 12px;font-size:14px}
+
+  #prompt{left:50%;top:192px;transform:translateX(-50%);background:#1E5FA8;border:2px solid #fff;border-radius:16px;padding:9px 16px;font-weight:700;font-size:16px;display:none}
+  #crosshair{left:50%;top:50%;width:8px;height:8px;margin:-4px 0 0 -4px;border-radius:50%;background:rgba(255,255,255,.85);box-shadow:0 0 0 2px rgba(0,0,0,.25);display:none}
+  #toast{top:236px;left:50%;transform:translateX(-50%);display:none;max-width:80vw;text-align:center}
+
+  /* ---------- legend ---------- */
+  #legend{left:12px;bottom:12px;font-size:13px;line-height:1.55;max-width:360px}
+  #legend b{color:#cfe6ff}
+  #legend .hint{color:#aab6c8;font-size:12px}
+
+  /* ---------- side panels ---------- */
+  .panel{position:fixed;right:12px;top:64px;width:min(370px,92vw);max-height:calc(100vh - 170px);overflow:auto;z-index:30;
+    background:#fbfaf7;color:#1d2433;border-radius:18px;padding:16px 18px;box-shadow:0 10px 40px rgba(0,0,0,.25);display:none;font-size:14px;line-height:1.45}
+  .panel.open{display:block}
+  .panel h2{font-size:18px;margin:0 0 10px}
+  .panel h3{font-size:15px;margin:16px 0 6px}
+  .panel .close{float:right;background:#eef1f5;border:0;border-radius:10px;padding:6px 10px;font-weight:700;cursor:pointer}
+  .row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #ebe7df}
+  .row > span{font-weight:600}
+  .seg{display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-end}
+  .seg button,.toggle{border:2px solid #c9d3e0;background:#fff;border-radius:10px;padding:5px 9px;font-size:13px;font-weight:600;cursor:pointer;color:#1d2433}
+  .seg button[aria-pressed="true"],.toggle[aria-pressed="true"]{background:#1E5FA8;color:#fff;border-color:#1E5FA8}
+  .note{font-size:12.5px;color:#4d5868;background:#f1eee7;border-radius:10px;padding:8px 10px;margin:10px 0}
+  .scn{border:1px solid #e3ded4;border-radius:12px;padding:10px;margin:8px 0;background:#fff}
+  .scn .t{font-weight:700}
+  .scn .q{color:#4d5868;margin:3px 0 7px;font-style:italic}
+  .scn button,.chipbtn{border:2px solid #1E5FA8;background:#fff;color:#1E5FA8;border-radius:10px;padding:4px 10px;font-weight:700;cursor:pointer;margin-right:6px}
+  .scn button.primary{background:#1E5FA8;color:#fff}
+  .chipbtn{display:block;width:100%;text-align:left;margin:5px 0;font-weight:600;color:#1d2433;border-color:#c9d3e0}
+  #typedInput{width:100%;box-sizing:border-box;border:2px solid #c9d3e0;border-radius:10px;padding:8px;font-size:14px;margin:6px 0}
+  .kchip{display:inline-block;border-radius:9px;padding:3px 8px;margin:2px;font-weight:700;font-size:12.5px;color:#fff}
+  .struck{text-decoration:line-through;color:#a14a3c;margin-right:6px}
+  .pp-block{border-left:4px solid #c9d3e0;padding:4px 0 4px 10px;margin:8px 0}
+  .pp-block b{display:block;font-size:12px;letter-spacing:.06em;color:#59647a;text-transform:uppercase}
+
+  /* ---------- overlays ---------- */
+  #startOverlay{position:fixed;inset:0;z-index:50;background:rgba(226,237,246,.96);display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;overflow:auto}
+  #startOverlay .card{background:#fff;max-width:640px;border-radius:24px;padding:28px 30px;box-shadow:0 14px 50px rgba(30,60,100,.18);color:#1d2433}
+  #startOverlay h1{margin:0 0 6px;font-size:26px}
+  #startOverlay .sub{color:#4d5868;margin:0 0 14px}
+  #startOverlay ol{padding-left:20px;margin:8px 0 12px}
+  #startBtn{background:#1E5FA8;color:#fff;border:0;border-radius:16px;padding:14px 26px;font-size:18px;font-weight:800;cursor:pointer}
+  .flow{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:13px;font-weight:700;margin:10px 0}
+  .flow span{background:#eaf2fb;border-radius:10px;padding:5px 9px;color:#1E5FA8}
+  #pausedOverlay{position:fixed;inset:0;z-index:40;background:rgba(220,232,242,.72);display:none;align-items:center;justify-content:center}
+  #pausedOverlay .card{background:#fff;border-radius:22px;padding:26px 34px;text-align:center;color:#1d2433;box-shadow:0 10px 40px rgba(0,0,0,.15)}
+  #pausedOverlay button{margin-top:12px;background:#1E5FA8;color:#fff;border:0;border-radius:14px;padding:12px 24px;font-size:17px;font-weight:800;cursor:pointer}
+
+  /* ---------- Enter VR button (Three.js VRButton, restyled; always on top) ---------- */
+  #VRButton, .vr-btn{
+    position:fixed !important; z-index:1000 !important; left:auto !important; right:16px !important; bottom:14px !important;
+    width:auto !important; padding:13px 20px 13px 60px !important; font:800 16px var(--font) !important; letter-spacing:.04em;
+    color:#fff !important; background-color:#1E5FA8 !important; border:2px solid #fff !important; border-radius:16px !important;
+    opacity:1 !important; box-shadow:0 6px 20px rgba(0,0,0,.25);
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 40'%3E%3Cpath d='M8 4h48a6 6 0 0 1 6 6v20a6 6 0 0 1-6 6H43l-6-8H27l-6 8H8a6 6 0 0 1-6-6V10a6 6 0 0 1 6-6z' fill='white'/%3E%3Ccircle cx='20' cy='19' r='6' fill='%231E5FA8'/%3E%3Ccircle cx='44' cy='19' r='6' fill='%231E5FA8'/%3E%3C/svg%3E") !important;
+    background-repeat:no-repeat !important; background-position:16px center !important; background-size:34px auto !important;
+  }
+  @media (max-width:760px){ #legend{display:none} #strip{display:none !important} }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body class="anim-low">
+<canvas id="scene" tabindex="0" aria-label="3D school environment"></canvas>
+
+<!-- ============ HUD ============ -->
+<div id="status" class="hud" aria-live="polite">
+  <div id="modeBadge" class="pill">Checking speech recognition…</div>
+  <div id="micBadge" class="pill"><span class="dot"></span><span id="micText">Mic off</span>
+    <span class="meter" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span></div>
+</div>
+
+<div id="toolbar" class="hud">
+  <button class="tb" id="btnPause" title="Pause / resume (P)"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1.5"/><rect x="14" y="5" width="4" height="14" rx="1.5"/></svg><span>Pause</span></button>
+  <button class="tb" id="btnMic" aria-pressed="false" title="Microphone on/off (M)"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0" stroke="currentColor" stroke-width="2" fill="none"/><rect x="11" y="17" width="2" height="4"/></svg><span>Mic off</span></button>
+  <button class="tb" id="btnConvos" aria-pressed="false" title="Conversation demos"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H10l-5 4v-4H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/></svg><span>Conversations</span></button>
+  <button class="tb" id="btnSettings" aria-pressed="false" title="Sensory settings"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 7h10M18 7h2M4 17h2M10 17h10" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><circle cx="16" cy="7" r="2.6"/><circle cx="8" cy="17" r="2.6"/></svg><span>Settings</span></button>
+  <button class="tb" id="btnPipeline" aria-pressed="false" title="How the speech pipeline works (presenter view)"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="3"/><circle cx="19" cy="12" r="3"/><rect x="8" y="11" width="8" height="2"/></svg><span>Pipeline</span></button>
+</div>
+
+<div id="strip" class="hud" aria-hidden="true">
+  <span data-s="0">1 HEAR</span><em>›</em><span data-s="1">2 TEXT</span><em>›</em><span data-s="2">3 SPLIT</span><em>›</em><span data-s="3">4 SIMPLIFY</span><em>›</em><span data-s="4">5 KEYWORDS</span><em>›</em><span data-s="5">6 SHOW</span>
+</div>
+<div id="guideHint" class="hud pill"></div>
+<div id="toast" class="hud pill" role="status"></div>
+<div id="crosshair" class="hud"></div>
+<div id="prompt" class="hud"></div>
+
+<div id="wearableWrap" class="hud" aria-live="polite">
+  <div id="wearableLabel">WEARABLE VIEW</div>
+  <canvas id="wearableCanvas" width="1024" height="200" role="img" aria-label="Wearable keyword display"></canvas>
+</div>
+<div id="kwControls" class="hud">
+  <button class="tb" id="btnRepeat" title="Repeat last keywords (R)">↻ Repeat</button>
+  <button class="tb" id="btnDismiss" title="Dismiss keywords (X)">✕ Dismiss</button>
+</div>
+
+<div id="legend" class="hud pill">
+  <div><b>Move</b> W A S D / arrow keys · <b>Shift</b> faster</div>
+  <div><b>Look</b> mouse (click to lock) or drag · <b>Scroll</b> zoom · <b>F</b> 1st / 3rd person</div>
+  <div><b>Talk</b> walk up to someone, press <b>E</b> · <b>R</b> repeat · <b>X</b> dismiss</div>
+  <div><b>M</b> microphone on/off · <b>P</b> pause · <b>H</b> hide this help</div>
+  <div><b>VR</b> left stick move · right stick turn · trigger talk · A repeat · B dismiss · X pause</div>
+</div>
+
+<!-- ============ PANELS ============ -->
+<div id="panelSettings" class="panel" role="dialog" aria-label="Sensory settings">
+  <button class="close" data-close>Close</button>
+  <h2>Sensory settings</h2>
+  <div class="row"><span>Character voices (text-to-speech)</span><button class="toggle" data-set="audio"></button></div>
+  <div class="row"><span>Text size</span><input type="range" min="0.8" max="1.6" step="0.1" data-set="textScale" aria-label="Text size"></div>
+  <div class="row"><span>Contrast</span><div class="seg" data-set="contrast"><button data-v="standard">Standard</button><button data-v="high">High</button></div></div>
+  <div class="row"><span>Animation</span><div class="seg" data-set="animation"><button data-v="low">Low</button><button data-v="medium">Medium</button></div></div>
+  <div class="row"><span>Keyword display time</span><div class="seg" data-set="duration"><button data-v="4">4 s</button><button data-v="8">8 s</button><button data-v="12">12 s</button><button data-v="0">Until dismissed</button></div></div>
+  <div class="row"><span>Keywords shown (max)</span><div class="seg" data-set="maxKeywords"><button data-v="3">3</button><button data-v="4">4</button><button data-v="5">5</button></div></div>
+  <div class="row"><span>Speech recognition</span><button class="toggle" data-set="recognition"></button></div>
+  <div class="row"><span>Recognition language</span><select data-set="lang" aria-label="Recognition language"><option value="en-IN">English (India)</option><option value="en-GB">English (UK)</option><option value="en-US">English (US)</option></select></div>
+  <div class="row"><span>View height (desktop)</span><div class="seg" data-set="eyeHeight"><button data-v="1.6">1.6 m</button><button data-v="1.2">Child 1.2 m</button></div></div>
+  <div class="row"><span>Presenter view (pipeline strip)</span><button class="toggle" data-set="presenter"></button></div>
+  <p class="note"><b>Privacy.</b> The microphone stays off until you switch it on. This page does not record, store or upload audio.
+  Live recognition uses your browser's built-in speech service: in Chrome this service may send audio to the browser maker's servers to turn it into text. That is controlled by the browser, not this page. Switch the mic off at any time with the Mic button or <b>M</b>.</p>
+  <p class="note">Settings are saved in this browser only. In VR, change settings before pressing Enter VR.</p>
+</div>
+
+<div id="panelConvos" class="panel" role="dialog" aria-label="Conversation demos">
+  <button class="close" data-close>Close</button>
+  <h2>Conversation demos</h2>
+  <p>Walk up to a person and press <b>E</b> (or pull the trigger in VR). You can also find or play a scenario here.</p>
+  <div id="scenarioList"></div>
+  <h3>Demo input <span style="font-weight:600;color:#a0631c">(simulated — not live recognition)</span></h3>
+  <p class="note">Type any sentence to see how the same pipeline would turn it into keywords.</p>
+  <input id="typedInput" type="text" placeholder="e.g. Please wash your hands before lunch." aria-label="Sentence to process">
+  <button class="chipbtn" id="typedGo" style="text-align:center;border-color:#1E5FA8;color:#1E5FA8;font-weight:800">Process sentence</button>
+  <div id="demoPhrases"></div>
+</div>
+
+<div id="panelPipeline" class="panel" role="dialog" aria-label="Speech pipeline">
+  <button class="close" data-close>Close</button>
+  <h2>How the wearable processes speech</h2>
+  <p class="note">This prototype uses <b>simple local rules</b> (keyword matching). It does not truly understand meaning.
+  The analyser is a replaceable module so a future language model / speech API can be plugged in.</p>
+  <div id="ppEmpty">Talk to someone, use the microphone, or type a sentence to see each stage here.</div>
+  <div id="ppBody" style="display:none">
+    <div class="pp-block"><b>1–2 · Heard → text</b><div id="ppHeard"></div></div>
+    <div class="pp-block"><b>3 · Sentences</b><ol id="ppSent" style="margin:4px 0;padding-left:18px"></ol></div>
+    <div class="pp-block"><b>4 · Simplified (filler removed)</b><div id="ppSimple"></div></div>
+    <div class="pp-block"><b>5 · Keywords (max shown)</b><div id="ppKw"></div></div>
+    <div class="pp-block"><b>Meaning (sentence type)</b><div id="ppType"></div></div>
+    <div class="pp-block"><b>Analyser</b><div id="ppAnalyzer"></div></div>
+  </div>
+</div>
+
+<div id="pausedOverlay"><div class="card">
+  <div style="font-size:24px;font-weight:800">Paused</div>
+  <div style="color:#4d5868;margin-top:6px">Take your time. Nothing will happen until you resume.</div>
+  <button id="resumeBtn">Resume</button>
+</div></div>
+
+<div id="startOverlay"><div class="card">
+  <h1>Pause Point · Wearable Speech Simulation</h1>
+  <p class="sub">A prototype of an assistive facial wearable that listens to everyday speech and shows a few simple keywords and picture cues, so a child can follow what is being said.</p>
+  <div class="flow"><span>Person speaks</span>→<span>Wearable hears</span>→<span>Speech to text</span>→<span>Key words picked out</span>→<span>Keywords + icons shown</span></div>
+  <ol>
+    <li>Walk around the school: classroom, corridor and playground.</li>
+    <li>Go up to a person and press <b>E</b> to hear them. The wearable view shows the keywords.</li>
+    <li>Turn on the <b>microphone</b> to try live speech (where the browser supports it).</li>
+  </ol>
+  <p class="note">Prototype demonstration only — not a clinical, diagnostic or therapeutic tool. The microphone stays off until you switch it on, and this page does not record or store audio.</p>
+  <button id="startBtn">Start (desktop)</button>
+  <span style="margin-left:12px;color:#4d5868">On Meta Quest, press <b>Enter VR</b> (bottom right).</span>
+</div></div>
+
+<!-- =====================================================================
+     WEARABLE CORE — speech pipeline + microphone input.
+     Independent of Three.js / the 3D environment.
+     ===================================================================== -->
+<script id="wearable-core">
+(function (global) {
+  'use strict';
+
+  /* ------------------------------------------------------------------
+     CATEGORIES — what kind of information a keyword is.
+     priority: lower = more important (safety → instructions → questions …)
+     tag: written label so meaning never relies on colour alone.
+     ------------------------------------------------------------------ */
+  const CATEGORIES = {
+    WARNING:  { key: 'WARNING',  tag: 'SAFETY',   color: '#D08A22', light: '#FFD892', priority: 0, icon: 'warn' },
+    ACTION:   { key: 'ACTION',   tag: 'DO',       color: '#3F7FD0', light: '#A9CDF7', priority: 1, icon: 'hand' },
+    QUESTION: { key: 'QUESTION', tag: 'QUESTION', color: '#8466CF', light: '#D2C4F5', priority: 2, icon: 'question' },
+    SOCIAL:   { key: 'SOCIAL',   tag: 'SOCIAL',   color: '#CF6177', light: '#F7C1CB', priority: 3, icon: 'people' },
+    LOCATION: { key: 'LOCATION', tag: 'PLACE',    color: '#3F9A55', light: '#B5E3BF', priority: 4, icon: 'pin' },
+    OBJECT:   { key: 'OBJECT',   tag: 'THING',    color: '#22908A', light: '#A8E2DD', priority: 5, icon: 'box' },
+    INFO:     { key: 'INFO',     tag: 'INFO',     color: '#6F7A8E', light: '#D5DAE3', priority: 6, icon: 'speech' }
+  };
+
+  /* Sentence types (contextual interpretation). rank: lower wins for the panel header. */
+  const TYPES = {
+    SAFETY:      { header: 'Safety first',      icon: 'warn',     cat: 'WARNING',  rank: 0 },
+    INSTRUCTION: { header: 'Please do this',    icon: 'hand',     cat: 'ACTION',   rank: 1 },
+    QUESTION:    { header: 'Question for you',  icon: 'question', cat: 'QUESTION', rank: 2 },
+    INVITATION:  { header: 'Invitation',        icon: 'people',   cat: 'SOCIAL',   rank: 3 },
+    GREETING:    { header: 'Greeting',          icon: 'smile',    cat: 'SOCIAL',   rank: 4 },
+    FEELING:     { header: 'Sharing a feeling', icon: 'heart',    cat: 'INFO',     rank: 5 },
+    INFO:        { header: 'Information',       icon: 'speech',   cat: 'INFO',     rank: 6 },
+    NOT_CLEAR:   { header: 'Not clear',         icon: 'question', cat: 'INFO',     rank: 7 }
+  };
+
+  const CONFIG = { maxKeywords: 4, minConfidence: 0.35 };
+
+  const NUMBER_WORDS = { one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10,eleven:11,twelve:12,
+    thirteen:13,fourteen:14,fifteen:15,sixteen:16,seventeen:17,eighteen:18,nineteen:19,twenty:20,thirty:30,forty:40,fifty:50 };
+  const NUM = '\\d+|' + Object.keys(NUMBER_WORDS).join('|');
+  const toNumber = w => /^\d+$/.test(w) ? w : String(NUMBER_WORDS[w] || w).toUpperCase();
+
+  /* ------------------------------------------------------------------
+     Text normalisation used for matching (lower case, contractions expanded).
+     ------------------------------------------------------------------ */
+  function prepareForMatching(s) {
+    return String(s || '').toLowerCase()
+      .replace(/[’‘`]/g, "'")
+      .replace(/\bwe're\b/g, 'we are').replace(/\byou're\b/g, 'you are').replace(/\bthey're\b/g, 'they are')
+      .replace(/\bi'm\b/g, 'i am').replace(/\bit's\b/g, 'it is').replace(/\bthat's\b/g, 'that is')
+      .replace(/\bthere's\b/g, 'there is').replace(/\bwhat's\b/g, 'what is').replace(/\bwhere's\b/g, 'where is')
+      .replace(/\bhow's\b/g, 'how is').replace(/\blet's\b/g, 'let us').replace(/\bdon't\b/g, 'do not')
+      .replace(/\bdoesn't\b/g, 'does not').replace(/\bcan't\b/g, 'cannot').replace(/\bwon't\b/g, 'will not')
+      .replace(/\bwanna\b/g, 'want to').replace(/\bgonna\b/g, 'going to')
+      .replace(/[,;:"()]/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  /* ------------------------------------------------------------------
+     STAGE 3 · SENTENCE SEGMENTATION
+     Splits on sentence punctuation and on spoken joiners ("and then", "but").
+     Live recognition often has no punctuation, so joiners matter.
+     ------------------------------------------------------------------ */
+  function segmentSentences(text) {
+    const clean = String(text || '').replace(/[’‘]/g, "'").replace(/\s+/g, ' ').trim();
+    if (!clean) return [];
+    const parts = clean.match(/[^.!?]+[.!?]*/g) || [clean];
+    const out = [];
+    for (let p of parts) {
+      p = p.trim();
+      if (!p) continue;
+      p.split(/\s*,?\s+(?:and then|after that|then|but)\s+/i).forEach(q => {
+        q = q.trim();
+        if (q.replace(/[^a-z0-9]/gi, '').length) out.push(q);
+      });
+    }
+    return out;
+  }
+
+  /* ------------------------------------------------------------------
+     STAGE 4 · SIMPLIFICATION — remove conversational filler only.
+     Never removes negations or content words, so meaning is preserved.
+     ------------------------------------------------------------------ */
+  const LEADING_FILLER = /^(?:hey there|hey|oh|ah|um+|uh+|er+|erm|hmm+|okay|ok|alright|so(?=,)|well(?!\s+done)|now(?=,)|right(?=,))\b[\s,!.]*/i;
+  const INLINE_FILLER = /\b(?:um+|uh+|erm|hmm+|please|kindly|just|actually|basically|you know|i mean|kind of|sort of)\b,?\s*/gi;
+
+  function simplifySpeech(sentence) {
+    let s = String(sentence || '').trim();
+    const removed = [];
+    let m, guard = 0;
+    while ((m = s.match(LEADING_FILLER)) && m[0].length && guard++ < 4) {
+      removed.push(m[0].replace(/[\s,!.]+$/, ''));
+      s = s.slice(m[0].length);
+    }
+    s = s.replace(INLINE_FILLER, w => { removed.push(w.replace(/[\s,]+$/, '')); return ''; });
+    s = s.replace(/\s+([,.!?])/g, '$1').replace(/^[,\s]+/, '').replace(/\s{2,}/g, ' ').trim();
+    return { original: sentence, text: s, removed };
+  }
+
+  /* ------------------------------------------------------------------
+     STAGE 5 · KEYWORD EXTRACTION — ordered phrase rules.
+     Each rule: regex → label, category, icon. "group" stops duplicates
+     (e.g. "school bag" wins over "bag"). "negatable" adds DON'T.
+     NOTE: this is keyword matching, not semantic understanding.
+     ------------------------------------------------------------------ */
+  function R(re, label, cat, icon, o) {
+    o = o || {};
+    return { re, label, cat, icon, group: o.group || null, negatable: !!o.negatable, flag: o.flag || null };
+  }
+  const val = (v, m) => (typeof v === 'function' ? v(m) : v);
+
+  const OBJECT_RULES = [
+    ['school ?bags?', 'SCHOOL BAG', 'bag', 'bag'],
+    ['bags?|backpacks?', 'BAG', 'bag', 'bag'],
+    ['shoes?|chappals?|sandals?', 'SHOES', 'shoe', 'shoes'],
+    ['socks?', 'SOCKS', 'shoe', 'socks'],
+    ['notebooks?', 'NOTEBOOK', 'book', 'notebook'],
+    ['homework', 'HOMEWORK', 'book', 'homework'],
+    ['story ?books?|books?', 'BOOK', 'book', 'book'],
+    ['crayons?', 'CRAYONS', 'pencil', 'crayons'],
+    ['pencils?', 'PENCIL', 'pencil', 'pencil'],
+    ['pens?', 'PEN', 'pencil', 'pen'],
+    ['water ?bottles?', 'WATER BOTTLE', 'water', 'bottle'],
+    ['bottles?', 'BOTTLE', 'water', 'bottle'],
+    ['lunch ?box(?:es)?|tiffin(?: box)?', 'LUNCH BOX', 'box', 'lunch'],
+    ['lunch', 'LUNCH', 'box', 'lunch'],
+    ['snacks?', 'SNACK', 'box', 'snack'],
+    ['football', 'FOOTBALL', 'ball', 'ball'],
+    ['balls?', 'BALL', 'ball', 'ball'],
+    ['bicycles?|bikes?|cycles?', 'BICYCLE', 'bike', 'bike'],
+    ['cars?', 'CAR', 'car', 'car'],
+    ['bus(?:es)?', 'BUS', 'car', 'bus'],
+    ['scooters?|motorbikes?', 'SCOOTER', 'car', 'scooter'],
+    ['swings?', 'SWING', 'play', 'swing'],
+    ['slide', 'SLIDE', 'play', 'slide'],
+    ['see-?saw', 'SEE-SAW', 'play', 'seesaw'],
+    ['toys?|blocks|puzzles?', 'TOYS', 'play', 'toys'],
+    ['jackets?|sweaters?|raincoats?', 'JACKET', 'box', 'jacket'],
+    ['umbrellas?', 'UMBRELLA', 'box', 'umbrella'],
+    ['chairs?', 'CHAIR', 'chair', 'chair'],
+    ['desks?|tables?', 'DESK', 'box', 'desk'],
+    ['pictures?|drawings?|paintings?', 'PICTURE', 'pencil', 'picture'],
+    ['door', 'DOOR', 'box', 'door'],
+    ['windows?', 'WINDOW', 'box', 'window'],
+    ['lights?', 'LIGHT', 'star', 'light']
+  ].map(([p, label, icon, group]) => R(new RegExp('\\b(?:' + p + ')\\b'), label, 'OBJECT', icon, { group: 'obj-' + group }));
+
+  const RULES = [
+    // ---- WARNING: immediate safety ----
+    R(/\b(?:stop|freeze)\b/, 'STOP', 'WARNING', 'stop', { group: 'stop' }),
+    R(/\b(?:watch out|look out|be careful|careful)\b/, 'CAREFUL', 'WARNING', 'warn', { group: 'careful' }),
+    R(/\b(?:floor|ground|path|road|stairs|steps)\b[^.?!]{0,20}\b(?:wet|slippery)\b|\b(?:wet|slippery)\b[^.?!]{0,12}\b(?:floor|ground|path|road|stairs|steps)\b/, 'WET FLOOR', 'WARNING', 'water', { group: 'wet' }),
+    R(/\b(?:bicycles?|bikes?|cycles?|cars?|bus|scooters?|autos?|rickshaws?|trucks?|motorbikes?)\b[^.?!]{0,25}\bcoming\b/, 'DANGER', 'WARNING', 'warn', { group: 'danger' }),
+    R(/\bdanger(?:ous)?\b/, 'DANGER', 'WARNING', 'warn', { group: 'danger' }),
+    R(/\b(hot|sharp)\b/, m => m[1].toUpperCase(), 'WARNING', 'warn', { group: 'hot' }),
+    R(/\bfire\b/, 'FIRE', 'WARNING', 'warn', { group: 'fire' }),
+
+    // ---- ACTION: things the child is asked to do ----
+    R(/\bpick (?:\w+ ){0,3}?up\b/, 'PICK UP', 'ACTION', 'arrowUp', { negatable: true, group: 'pickup' }),
+    R(/\bput (?:on\b|(?:(?:your|the|my|his|her|their) )?(?:\w+ )?on\b(?!\s+(?:the|a|an|this|that|top|it|my|your)\b))/, 'PUT ON', 'ACTION', 'hand', { negatable: true, group: 'puton' }),
+    R(/\bput (?:\w+ ){0,3}?away\b/, 'PUT AWAY', 'ACTION', 'box', { negatable: true, group: 'puton' }),
+    R(/\bput\b/, 'PUT', 'ACTION', 'hand', { negatable: true, group: 'puton' }),
+    R(/\bbring\b/, 'BRING', 'ACTION', 'hand', { negatable: true }),
+    R(/\bgive\b/, 'GIVE', 'ACTION', 'hand', { negatable: true }),
+    R(/\btake (?:a |your )?break\b/, 'TAKE A BREAK', 'ACTION', 'pause', { group: 'break' }),
+    R(/\btake (?:\w+ ){0,3}?out\b/, 'TAKE OUT', 'ACTION', 'hand', { negatable: true }),
+    R(/\bopen\b(?!\s+(?:it |them |up |your \w+ |the \w+ )?to page)/, 'OPEN', 'ACTION', 'book', { negatable: true }),
+    R(/\bsit(?: down)?\b/, 'SIT DOWN', 'ACTION', 'chair', { negatable: true }),
+    R(/\bstand up\b/, 'STAND UP', 'ACTION', 'arrowUp', { negatable: true }),
+    R(/\bline up\b/, 'LINE UP', 'ACTION', 'people'),
+    R(/\bwash (?:your )?hands\b/, 'WASH HANDS', 'ACTION', 'water'),
+    R(/\b(?:drink|have) (?:some )?water\b/, 'DRINK WATER', 'ACTION', 'water'),
+    R(/\bbrush (?:your )?teeth\b/, 'BRUSH TEETH', 'ACTION', 'smile'),
+    R(/\b(?:clean up|tidy up|tidy)\b/, 'CLEAN UP', 'ACTION', 'box'),
+    R(/\b(?:walk slowly|slow down|go slowly|go slow)\b/, 'WALK SLOWLY', 'ACTION', 'walk', { group: 'walk' }),
+    R(/\bwalk\b/, 'WALK', 'ACTION', 'walk', { negatable: true, group: 'walk' }),
+    R(/\b(?:run|running)\b/, 'RUN', 'ACTION', 'walk', { negatable: true }),
+    R(/\btouch\b/, 'TOUCH', 'ACTION', 'hand', { negatable: true }),
+    R(/\bkick\b/, 'KICK', 'ACTION', 'ball', { negatable: true }),
+    R(/\bshout(?:ing)?\b/, 'SHOUT', 'ACTION', 'speech', { negatable: true }),
+    R(/\b(?:be quiet|quietly|quiet|inside voice)\b/, 'QUIET', 'ACTION', 'pause'),
+    R(/\blisten\b/, 'LISTEN', 'ACTION', 'listen'),
+    R(/\blook (?:here|at me|at this|at the board)\b/, 'LOOK', 'ACTION', 'eye'),
+    R(/\bwait\b/, 'WAIT', 'ACTION', 'clock', { negatable: true }),
+    R(/\bcome (?:here|with me|back)\b/, 'COME HERE', 'ACTION', 'arrow'),
+    R(/\b(?:hurry(?: up)?|quickly)\b/, 'HURRY', 'ACTION', 'clock'),
+    R(/\bget (?:\w+ ){0,2}?ready\b/, 'GET READY', 'ACTION', 'clock'),
+    R(/\bwrite\b/, 'WRITE', 'ACTION', 'pencil'),
+    R(/\b(?:draw|colour|color)\b/, 'DRAW', 'ACTION', 'pencil'),
+    R(/\bread\b/, 'READ', 'ACTION', 'book'),
+    R(/\beat\b/, 'EAT', 'ACTION', 'box', { negatable: true }),
+    R(/\bshare\b/, 'SHARE', 'SOCIAL', 'people'),
+    R(/\b(?:do you )?need (?:any |some )?help\b/, 'NEED HELP?', 'QUESTION', 'hand', { group: 'help' }),
+    R(/\bhelp\b/, 'HELP', 'ACTION', 'hand', { group: 'help' }),
+
+    // ---- TIME / LEAVING (context) ----
+    R(/\bleav(?:e|ing)\b[^.?!]{0,25}\b(?:in (?:a )?(?:few|\w+) minutes?|soon|now|shortly)\b/, 'LEAVING SOON', 'INFO', 'clock', { group: 'leave' }),
+    R(/\bleav(?:e|ing)\b/, 'LEAVING', 'INFO', 'arrow', { group: 'leave' }),
+    R(new RegExp('\\b(?:in (?:a )?(?:few|' + NUM + ') minutes?|soon)\\b'), 'SOON', 'INFO', 'clock', { group: 'leave' }),
+
+    // ---- LOCATION ----
+    R(/\b(?:go|going|head|heading|went) (?:back )?home\b/, 'GO HOME', 'LOCATION', 'home', { group: 'home' }),
+    R(/\bhome\b/, 'HOME', 'LOCATION', 'home', { group: 'home' }),
+    R(/\b(?:come|go|going|let us go) outside\b/, 'COME OUTSIDE', 'LOCATION', 'tree', { group: 'inout' }),
+    R(/\b(?:come|go|going) inside\b/, 'GO INSIDE', 'LOCATION', 'home', { group: 'inout' }),
+    R(/\boutside\b/, 'OUTSIDE', 'LOCATION', 'tree', { group: 'inout' }),
+    R(/\binside\b/, 'INSIDE', 'LOCATION', 'home', { group: 'inout' }),
+    R(/\bpause point\b/, 'PAUSE POINT', 'LOCATION', 'pause'),
+    R(/\b(park|playground|garden|classroom|library|canteen|toilet|bathroom|washroom|corridor|assembly|market|temple|hospital|gate|school(?! ?bags?))\b/,
+      m => m[1].toUpperCase(), 'LOCATION',
+      m => (/park|playground|garden/.test(m[1]) ? 'tree' : (m[1] === 'school' ? 'home' : 'pin')),
+      { group: m => 'loc-' + m[1] }),
+    R(new RegExp('\\bpage (?:number )?(' + NUM + ')\\b'), m => 'PAGE ' + toNumber(m[1]), 'OBJECT', 'page', { group: 'page' }),
+
+    // ---- QUESTION (specific phrases) ----
+    R(/\bhow are you(?: feeling| doing)?\b/, 'HOW ARE YOU?', 'QUESTION', 'smile'),
+    R(/\bwhat is your name\b/, 'YOUR NAME?', 'QUESTION', 'question'),
+    R(/\bare you (?:ok|okay|alright|all right|fine|hurt)\b/, 'ARE YOU OK?', 'QUESTION', 'smile'),
+    R(/\bare you ready\b/, 'READY?', 'QUESTION', 'clock'),
+    R(/\bare you (hungry|thirsty|tired|cold)\b/, m => m[1].toUpperCase() + '?', 'QUESTION', 'question'),
+
+    // ---- SOCIAL ----
+    R(/\bgood (morning|afternoon|evening|night)\b/, m => 'GOOD ' + m[1].toUpperCase(), 'SOCIAL', 'smile', { group: 'greet', flag: 'greet' }),
+    R(/\b(?:hello|hi|namaste)\b/, 'HELLO', 'SOCIAL', 'smile', { group: 'greet', flag: 'greet' }),
+    R(/\b(?:goodbye|bye|see you)\b/, 'GOODBYE', 'SOCIAL', 'smile', { flag: 'greet' }),
+    R(/\b(?:thank you|thanks)\b/, 'THANK YOU', 'SOCIAL', 'heart', { flag: 'greet' }),
+    R(/\b(?:well done|good job|great job|great work|good work|very good)\b/, 'WELL DONE', 'SOCIAL', 'star', { flag: 'greet' }),
+    R(/\bsorry\b/, 'SORRY', 'SOCIAL', 'heart', { flag: 'greet' }),
+    R(/\bhappy birthday\b/, 'HAPPY BIRTHDAY', 'SOCIAL', 'star', { group: 'bday', flag: 'greet' }),
+    R(/\bbirthday\b/, 'BIRTHDAY', 'SOCIAL', 'star', { group: 'bday' }),
+    R(/\bplay(?:ing)?\b/, 'PLAY', 'SOCIAL', 'play'),
+    R(/\b(?:with us|join us|join in|come with us|our team)\b/, 'JOIN US', 'SOCIAL', 'people', { group: 'join' }),
+    R(/\bfriends?\b/, 'FRIENDS', 'SOCIAL', 'people'),
+    R(/\b(?:your|my) turn\b/, m => m[0].toUpperCase(), 'SOCIAL', 'arrow'),
+
+    // ---- Feelings: ONLY when stated in words. Never guessed from tone or face. ----
+    R(/\b(?:i am|i feel|i am feeling|we are|we feel) (?:so |very |a bit |really |a little )?(happy|sad|angry|upset|tired|excited|scared|worried|proud|bored|nervous)\b/,
+      m => 'FEELS ' + m[1].toUpperCase(), 'INFO', 'heart', { flag: 'feeling' }),
+    R(/\b(?:raining|rain|rainy)\b/, 'RAIN', 'INFO', 'water')
+  ].concat(OBJECT_RULES);
+
+  const NEGATION_BEFORE = /(?:\bdo not|\bnever|\bno|\bstop)\s+(?:\w+\s+)?$/;
+
+  /** extractKeywords(text) → [{label, cat, icon, index, negated, flag}] */
+  function extractKeywords(text) {
+    const t = prepareForMatching(text);
+    const found = [], groups = new Set(), labels = new Set();
+    for (const rule of RULES) {
+      const m = rule.re.exec(t);
+      if (!m) continue;
+      const group = val(rule.group, m);
+      if (group && groups.has(group)) continue;
+      let label = val(rule.label, m);
+      let negated = false;
+      if (rule.negatable) {
+        const before = t.slice(Math.max(0, m.index - 22), m.index);
+        if (NEGATION_BEFORE.test(before)) { negated = true; label = "DON'T " + label; }
+      }
+      if (group) groups.add(group);
+      if (labels.has(label)) continue;
+      labels.add(label);
+      found.push({ label, cat: rule.cat, icon: val(rule.icon, m), index: m.index, negated, flag: rule.flag });
+    }
+    return found;
+  }
+
+  /* ------------------------------------------------------------------
+     CONTEXTUAL INTERPRETATION — what kind of sentence is it?
+     Polite requests ("could you…") are instructions, not questions.
+     Statements are NOT turned into instructions.
+     ------------------------------------------------------------------ */
+  const QUESTION_START = /^(?:do(?! not\b)|does(?! not\b)|did(?! not\b)|are|is|was|were|can|could|would|will|shall|should|have|has|how|what|where|when|who|why|which|want to)\b/;
+  const REQUEST_RE = /^(?:please |kindly )?(?:could|can|would|will) you (?:please |kindly )?(?:\w+ )?(?:pick|put|take|open|close|sit|stand|give|bring|come|wash|clean|tidy|help|get|line|wait|stop|walk|write|read|pass|hold|turn|switch|drink|eat|listen|look|keep|hang|show|carry|move)\b/;
+  const INVITE_RE = /\b(?:would you like to|do you want to|want to|shall we|let us|come and|join us|join in|come with us)\b/;
+
+  function classifySegment(original, kws) {
+    const t = prepareForMatching(original).replace(/^(?:hey there|hey|hi|hello|oh|okay|ok|so|well|um|uh)\s+/, '');
+    const has = c => kws.some(k => k.cat === c);
+    const isQ = /\?\s*$/.test(String(original).trim()) || QUESTION_START.test(t);
+    if (has('WARNING')) return { type: 'SAFETY', reason: 'Contains a safety word (stop, careful, danger, wet floor…).' };
+    if (REQUEST_RE.test(t) && has('ACTION')) return { type: 'INSTRUCTION', reason: 'Polite request ("could you / can you …") with an action word, so it is treated as an instruction, not a question.' };
+    if (INVITE_RE.test(t) && isQ) return { type: 'INVITATION', reason: 'Phrased as an offer ("would you like to / do you want to …").' };
+    if (has('ACTION') && !isQ) return { type: 'INSTRUCTION', reason: 'Contains an action word and is not phrased as a question.' };
+    if (isQ) return { type: 'QUESTION', reason: 'Ends with "?" or starts with a question word.' };
+    if (INVITE_RE.test(t)) return { type: 'INVITATION', reason: 'Suggests doing something together.' };
+    if (kws.some(k => k.flag === 'greet')) return { type: 'GREETING', reason: 'Greeting or social phrase.' };
+    if (kws.some(k => k.flag === 'feeling')) return { type: 'FEELING', reason: 'The speaker says a feeling in words. No emotion is guessed from tone or facial expression.' };
+    return { type: 'INFO', reason: 'A statement, shown as information rather than an instruction.' };
+  }
+
+  const STOPWORDS = new Set(('a an the is are am was were be been being to of in on at for with and or but it this that these those you your yours i me my mine we us our they them their he she his her do does did done have has had will would can could should shall may might must there here what so very really today now then just not no yes ok okay get got go going gone some any all about like also too if when how its it\'s im let lets from up out as by more much many one thing things know think want said say well oh hey um uh yeah hmm gonna wanna come came put take make made see look need please kindly').split(' '));
+
+  function fallbackWords(text) {
+    const words = (String(text).toLowerCase().match(/[a-z][a-z'-]+/g) || [])
+      .filter(w => w.length >= 3 && !STOPWORDS.has(w));
+    return [...new Set(words)].slice(0, 3);
+  }
+
+  function notClearResult(base, reason) {
+    base.notClear = true;
+    base.keywords = [{ label: 'NOT CLEAR', cat: 'INFO', icon: 'question', index: 0 }];
+    base.interpretation = Object.assign({ type: 'NOT_CLEAR' }, TYPES.NOT_CLEAR, { reason });
+    return base;
+  }
+
+  /* ------------------------------------------------------------------
+     LOCAL ANALYSER — runs stages 3–5 + interpretation + priority selection.
+     Output shape is the contract any future AI analyser must also return.
+     ------------------------------------------------------------------ */
+  function analyzeLocal(text, meta) {
+    meta = meta || {};
+    const base = { input: String(text || ''), meta, analyzer: 'local-rules', segments: [], keywords: [], hidden: [],
+      interpretation: null, notClear: false, fallback: false };
+    const conf = typeof meta.confidence === 'number' ? meta.confidence : null;
+    if (meta.noMatch) return notClearResult(base, 'The speech recogniser could not match the sound to words.');
+    if (!base.input.trim()) return notClearResult(base, 'No words were recognised.');
+    if (conf !== null && conf > 0 && conf < CONFIG.minConfidence)
+      return notClearResult(base, 'Recognition confidence was low (' + conf.toFixed(2) + '), so nothing is guessed.');
+
+    let all = [];
+    segmentSentences(base.input).forEach((s, si) => {
+      const simp = simplifySpeech(s);
+      const kws = extractKeywords(simp.text);
+      const cls = classifySegment(s, kws);
+      if (cls.type === 'QUESTION' && !kws.some(k => k.cat === 'QUESTION'))
+        kws.push({ label: 'ASKING YOU', cat: 'QUESTION', icon: 'question', index: 9999 });
+      base.segments.push({ original: s, simplified: simp.text, removed: simp.removed, type: cls.type, reason: cls.reason,
+        keywords: kws.map(k => k.label) });
+      kws.forEach(k => all.push(Object.assign({}, k, { order: si * 10000 + k.index })));
+    });
+
+    const seen = new Set();
+    all = all.filter(k => (seen.has(k.label) ? false : (seen.add(k.label), true)));
+
+    if (!all.length) {
+      const words = fallbackWords(base.segments.map(s => s.simplified).join(' '));
+      if (!words.length) return notClearResult(base, 'Only filler words were heard.');
+      base.fallback = true;
+      all = words.map((w, i) => ({ label: w.toUpperCase(), cat: 'INFO', icon: 'speech', order: i }));
+    }
+
+    // Priority selection: safety → actions → questions → social → place → thing → info
+    const ranked = all.slice().sort((a, b) =>
+      CATEGORIES[a.cat].priority - CATEGORIES[b.cat].priority || a.order - b.order);
+    const keep = ranked.slice(0, CONFIG.maxKeywords);
+    base.hidden = ranked.slice(CONFIG.maxKeywords).map(k => k.label);
+    // Display order: safety first, then the order they were spoken.
+    base.keywords = keep.sort((a, b) =>
+      (a.cat === 'WARNING' ? 0 : 1) - (b.cat === 'WARNING' ? 0 : 1) || a.order - b.order);
+
+    const top = base.segments.map(s => s.type).sort((a, b) => TYPES[a].rank - TYPES[b].rank)[0] || 'INFO';
+    const seg = base.segments.find(s => s.type === top);
+    base.interpretation = Object.assign({ type: top }, TYPES[top], {
+      reason: base.fallback ? 'No known keywords, so a few content words from the sentence are shown as information.' : (seg ? seg.reason : '')
+    });
+    return base;
+  }
+
+  /* ------------------------------------------------------------------
+     ANALYSER INTERFACE (swap point for a future AI speech API)
+     Any analyser must implement: analyze(text, meta) → Promise<result>
+     with the same result shape as analyzeLocal().
+     ------------------------------------------------------------------ */
+  const LocalRuleAnalyzer = {
+    id: 'local-rules',
+    label: 'Local rule-based keyword matching (runs in this browser)',
+    analyze: (text, meta) => Promise.resolve(analyzeLocal(text, meta))
+  };
+
+  /*
+   * PLACEHOLDER — future AI / language-model analyser.
+   * NEVER put API keys in this file. Call YOUR OWN server endpoint, which holds
+   * the key and talks to the AI provider. The server must return the same
+   * shape as analyzeLocal(). To enable:
+   *   RemoteAnalyzerPlaceholder.endpoint = 'https://your-server.example/api/analyze-speech';
+   *   WearableCore.setAnalyzer(RemoteAnalyzerPlaceholder);
+   * If the call fails, processSpeech() falls back to the local rules.
+   */
+  const RemoteAnalyzerPlaceholder = {
+    id: 'remote-api',
+    label: 'Remote AI analyser (placeholder, not configured)',
+    endpoint: '',
+    async analyze(text, meta) {
+      if (!this.endpoint) throw new Error('Remote analyser endpoint not configured');
+      const res = await fetch(this.endpoint, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, maxKeywords: CONFIG.maxKeywords, categories: Object.keys(CATEGORIES) })
+      });
+      if (!res.ok) throw new Error('Remote analyser HTTP ' + res.status);
+      const r = await res.json();
+      r.analyzer = this.id;
+      return r;
+    }
+  };
+
+  let activeAnalyzer = LocalRuleAnalyzer;
+  const resultListeners = [];
+
+  /**
+   * processSpeech(text, meta) — single entry point for ALL speech
+   * (live microphone, character demos and typed demo input).
+   * meta: { source:'live'|'demo'|'typed', speaker, confidence, noMatch }
+   */
+  async function processSpeech(text, meta) {
+    meta = meta || {};
+    const t0 = (global.performance ? performance.now() : Date.now());
+    let result;
+    try { result = await activeAnalyzer.analyze(text, meta); }
+    catch (err) {
+      console.warn('[Wearable] analyser failed, using local rules', err);
+      result = analyzeLocal(text, meta);
+      result.analyzerNote = 'Remote analyser failed, local rules used instead.';
+    }
+    result.meta = meta;
+    result.ms = Math.round((global.performance ? performance.now() : Date.now()) - t0);
+    resultListeners.forEach(fn => { try { fn(result); } catch (e) { console.error(e); } });
+    return result;
+  }
+
+  /* ------------------------------------------------------------------
+     MICROPHONE INPUT + SPEECH RECOGNITION (Web Speech API)
+     - Never requests the mic before the user presses the Mic button.
+     - Audio is analysed for a level meter only; it is not played, stored or uploaded by this page.
+     ------------------------------------------------------------------ */
+  const SpeechInput = (function () {
+    const SR = global.SpeechRecognition || global.webkitSpeechRecognition || null;
+    const state = { micActive: false, recognitionRunning: false, recognitionWanted: false, recognitionFailed: false,
+      status: 'off', detail: '', lang: 'en-IN', suppressUntil: 0 };
+    let stream = null, audioCtx = null, analyser = null, buf = null, recognition = null, restartTimer = null;
+    let restartCount = 0, restartWindowStart = 0;
+    const statusHandlers = [], interimHandlers = [];
+
+    function emit(status, detail) {
+      state.status = status; state.detail = detail || '';
+      statusHandlers.forEach(f => f(Object.assign({}, state)));
+    }
+
+    async function start(opts) {
+      opts = opts || {};
+      if (state.micActive) return true;
+      if (opts.lang) state.lang = opts.lang;
+      if (!global.isSecureContext) { emit('error', 'The microphone needs HTTPS (or localhost).'); return false; }
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { emit('error', 'This browser does not give access to a microphone.'); return false; }
+      emit('requesting', 'Waiting for microphone permission…');
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
+      } catch (err) {
+        emit('denied', err && err.name === 'NotAllowedError' ? 'Microphone permission was not given.' : 'Could not open the microphone.');
+        return false;
+      }
+      try {
+        const AC = global.AudioContext || global.webkitAudioContext;
+        audioCtx = new AC();
+        const src = audioCtx.createMediaStreamSource(stream);
+        analyser = audioCtx.createAnalyser(); analyser.fftSize = 512; buf = new Uint8Array(analyser.fftSize);
+        src.connect(analyser); // NOT connected to the speakers: no playback.
+      } catch (e) { analyser = null; }
+      state.micActive = true;
+      if (opts.recognition !== false) startRecognition();
+      else emit('mic-only', 'Microphone on. Speech recognition is switched off in settings.');
+      return true;
+    }
+
+    function stop() {
+      state.micActive = false;
+      stopRecognition();
+      if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+      if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
+      analyser = null;
+      emit('off', 'Microphone off.');
+    }
+
+    function startRecognition() {
+      state.recognitionWanted = true;
+      if (!SR) { emit('unsupported', 'This browser has no live speech recognition.'); return; }
+      if (recognition || !state.micActive) return;
+      const now = Date.now();
+      if (now - restartWindowStart > 20000) { restartWindowStart = now; restartCount = 0; }
+      if (++restartCount > 8) { state.recognitionFailed = true; state.recognitionWanted = false; emit('rec-error', 'Speech recognition keeps stopping in this browser.'); return; }
+      let rec;
+      try {
+        rec = new SR();
+        rec.lang = state.lang; rec.continuous = true; rec.interimResults = true; rec.maxAlternatives = 1;
+      } catch (e) { state.recognitionFailed = true; emit('rec-error', 'Could not start speech recognition.'); return; }
+      recognition = rec;
+      rec.onstart = () => { state.recognitionRunning = true; state.recognitionFailed = false; emit('live', 'Listening with the browser’s speech recognition.'); };
+      rec.onresult = (e) => {
+        if (Date.now() < state.suppressUntil) return; // ignore the simulation's own voices
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const r = e.results[i], alt = r[0];
+          if (!alt) continue;
+          if (r.isFinal) { restartCount = 0; processSpeech(alt.transcript, { source: 'live', speaker: 'Nearby voice', confidence: alt.confidence }); }
+          else interimHandlers.forEach(f => f(alt.transcript));
+        }
+      };
+      rec.onnomatch = () => processSpeech('', { source: 'live', speaker: 'Nearby voice', noMatch: true });
+      rec.onerror = (e) => {
+        const err = e.error;
+        if (err === 'no-speech' || err === 'aborted') return;
+        state.recognitionFailed = true; state.recognitionWanted = false;
+        if (err === 'not-allowed' || err === 'service-not-allowed') emit('rec-blocked', 'Speech recognition is blocked or unavailable here.');
+        else if (err === 'network') emit('rec-network', 'The browser’s speech service could not be reached.');
+        else if (err === 'language-not-supported') emit('rec-error', 'This language is not supported by the browser’s recogniser.');
+        else emit('rec-error', 'Speech recognition error: ' + err);
+      };
+      rec.onend = () => {
+        if (recognition === rec) recognition = null;
+        state.recognitionRunning = false;
+        if (state.micActive && state.recognitionWanted) {
+          clearTimeout(restartTimer); restartTimer = setTimeout(startRecognition, 400); // Chrome stops after silence
+        } else if (state.micActive && !state.recognitionFailed) emit('mic-only', 'Microphone on. Speech recognition is off.');
+        else if (state.micActive) emit(state.status, state.detail);
+      };
+      try { rec.start(); } catch (e) { recognition = null; state.recognitionFailed = true; emit('rec-error', 'Could not start speech recognition.'); }
+    }
+
+    function stopRecognition() {
+      state.recognitionWanted = false;
+      clearTimeout(restartTimer);
+      if (recognition) { const r = recognition; recognition = null; try { r.abort(); } catch (e) {} }
+      state.recognitionRunning = false;
+    }
+
+    function getLevel() {
+      if (!analyser) return 0;
+      analyser.getByteTimeDomainData(buf);
+      let s = 0;
+      for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; s += v * v; }
+      return Math.min(1, Math.sqrt(s / buf.length) * 5);
+    }
+
+    return {
+      supported: !!SR, state, start, stop, startRecognition, stopRecognition, getLevel,
+      suppress(ms) { state.suppressUntil = Date.now() + ms; },
+      setLang(l) { state.lang = l; if (recognition) { stopRecognition(); state.recognitionFailed = false; startRecognition(); } },
+      retry() { state.recognitionFailed = false; restartCount = 0; if (state.micActive) startRecognition(); },
+      onStatus(f) { statusHandlers.push(f); },
+      onInterim(f) { interimHandlers.push(f); }
+    };
+  })();
+
+  /** startMicrophone() — explicit user action only. Returns Promise<boolean>. */
+  function startMicrophone(opts) { return SpeechInput.start(opts); }
+  /** stopMicrophone() — stops capture and releases the microphone. */
+  function stopMicrophone() { SpeechInput.stop(); }
+
+  global.WearableCore = {
+    CATEGORIES, TYPES, CONFIG,
+    segmentSentences, simplifySpeech, extractKeywords, classifySegment, analyzeLocal, processSpeech,
+    onResult(fn) { resultListeners.push(fn); },
+    setAnalyzer(a) { activeAnalyzer = a || LocalRuleAnalyzer; },
+    getAnalyzer() { return activeAnalyzer; },
+    LocalRuleAnalyzer, RemoteAnalyzerPlaceholder, SpeechInput, startMicrophone, stopMicrophone
+  };
+  Object.assign(global, { processSpeech, extractKeywords, simplifySpeech, startMicrophone, stopMicrophone });
+})(typeof window !== 'undefined' ? window : globalThis);
+</script>
+
+<!-- =====================================================================
+     3D SIMULATION — Three.js scene, characters, movement, VR, display
+     ===================================================================== -->
+<script type="module">
+import * as THREE from 'three';
+import { VRButton } from 'three/addons/webxr/VRButton.js';
+
+const Core = window.WearableCore;
+const CAT = Core.CATEGORIES;
+const SpeechInput = Core.SpeechInput;
+const FONT = "system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans', Arial, sans-serif";
+
+/* =====================================================================
+   0. SETTINGS (persisted) + APP STATE
+   ===================================================================== */
+const SETTINGS_KEY = 'pausepoint-wearable-settings-v1';
+const DEFAULT_SETTINGS = { audio: true, textScale: 1, contrast: 'standard', animation: 'low', duration: 8,
+  maxKeywords: 4, recognition: true, lang: 'en-IN', eyeHeight: 1.6, presenter: true };
+const settings = (() => {
+  try { return Object.assign({}, DEFAULT_SETTINGS, JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}')); }
+  catch (e) { return Object.assign({}, DEFAULT_SETTINGS); }
+})();
+function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {} }
+
+const WALK_SPEED = 2.2, RUN_SPEED = 3.8, VR_SPEED = 1.4, INTERACT_DIST = 2.6, PLAYER_R = 0.28;
+const app = { started: false, paused: false, xr: false, thirdPerson: false, tpDist: 3, fov: 70,
+  yaw: 0, pitch: -0.05, pointerLocked: false, dragging: false, lastX: 0, lastY: 0, dragHintShown: false,
+  nearest: null, guide: null, resumeMicAfterPause: false, keys: {}, snapReady: true };
+
+/* =====================================================================
+   1. SCENE SETUP & RENDERING
+   ===================================================================== */
+const canvas = document.getElementById('scene');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.xr.enabled = true;
+renderer.xr.setReferenceSpaceType('local-floor');
+
+const scene = new THREE.Scene();
+const FOG_COLOR = 0xDCEAF3;
+scene.background = new THREE.Color(FOG_COLOR);
+scene.fog = new THREE.Fog(FOG_COLOR, 38, 120);
+
+const camera = new THREE.PerspectiveCamera(app.fov, innerWidth / innerHeight, 0.05, 400);
+// Rig → pivot (eye height + pitch, desktop only) → camera. In VR the rig sits at y=0 and the headset supplies height.
+const rig = new THREE.Group();
+const pivot = new THREE.Group();
+rig.add(pivot); pivot.add(camera); scene.add(rig);
+pivot.position.y = settings.eyeHeight;
+
+// Lighting: sky light + one soft shadow-casting sun
+const hemi = new THREE.HemisphereLight(0xDDEEFF, 0xB8D49C, 1.3);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xFFF1DC, 2.1);
+sun.position.set(18, 30, 16);
+sun.castShadow = true;
+sun.shadow.mapSize.set(1024, 1024);
+Object.assign(sun.shadow.camera, { left: -32, right: 32, top: 32, bottom: -32, near: 1, far: 90 });
+sun.shadow.bias = -0.0006; sun.shadow.normalBias = 0.03; sun.shadow.radius = 3;
+sun.target.position.set(0, 0, 3);
+scene.add(sun, sun.target);
+
+// Sky dome (cheap gradient shader)
+{
+  const sky = new THREE.Mesh(new THREE.SphereGeometry(300, 24, 12), new THREE.ShaderMaterial({
+    side: THREE.BackSide, depthWrite: false, fog: false,
+    uniforms: { top: { value: new THREE.Color(0x86C0EC) }, bottom: { value: new THREE.Color(FOG_COLOR) } },
+    vertexShader: 'varying vec3 vP; void main(){ vec4 w = modelMatrix*vec4(position,1.0); vP = w.xyz; gl_Position = projectionMatrix*viewMatrix*w; }',
+    fragmentShader: [
+      'uniform vec3 top; uniform vec3 bottom; varying vec3 vP;',
+      'void main(){',
+      '  float h = clamp(normalize(vP).y*1.8, 0.0, 1.0);',
+      '  gl_FragColor = vec4(mix(bottom, top, h), 1.0);',
+      '  #include <tonemapping_fragment>',
+      '  #include <colorspace_fragment>',
+      '}'].join('\n')
+  }));
+  sky.renderOrder = -10;
+  scene.add(sky);
+}
+
+/* =====================================================================
+   2. SHARED MATERIALS, GEOMETRY & CANVAS HELPERS (factories)
+   ===================================================================== */
+const _mats = new Map();
+function mat(color, opts) {
+  const key = color + (opts ? JSON.stringify(opts) : '');
+  if (!_mats.has(key)) _mats.set(key, new THREE.MeshLambertMaterial(Object.assign({ color }, opts || {})));
+  return _mats.get(key);
+}
+const _geos = new Map();
+function geo(key, make) { if (!_geos.has(key)) _geos.set(key, make()); return _geos.get(key); }
+const UNIT_BOX = new THREE.BoxGeometry(1, 1, 1);
+
+/** box(): y is the BOTTOM of the box. Optional collider registered from world footprint. */
+function box(w, h, d, color, x, y, z, o) {
+  o = o || {};
+  const m = new THREE.Mesh(UNIT_BOX, o.material || mat(color, o.matOpts));
+  m.scale.set(w, h, d);
+  m.position.set(x, y + h / 2, z);
+  m.castShadow = o.cast !== undefined ? o.cast : h > 0.25;
+  m.receiveShadow = o.receive !== undefined ? o.receive : true;
+  (o.parent || scene).add(m);
+  if (o.collide) addAABB(x - w / 2 - (o.pad || 0), x + w / 2 + (o.pad || 0), z - d / 2 - (o.pad || 0), z + d / 2 + (o.pad || 0));
+  return m;
+}
+function cyl(rt, rb, h, color, x, y, z, o) {
+  o = o || {};
+  const seg = o.seg || 12;
+  const g = geo('c' + rt + '_' + rb + '_' + h + '_' + seg, () => new THREE.CylinderGeometry(rt, rb, h, seg));
+  const m = new THREE.Mesh(g, o.material || mat(color, o.matOpts));
+  m.position.set(x, y + h / 2, z);
+  m.castShadow = o.cast !== undefined ? o.cast : true; m.receiveShadow = true;
+  (o.parent || scene).add(m);
+  if (o.collide) addCircle(x, z, Math.max(rt, rb) + (o.pad || 0));
+  return m;
+}
+function ball(r, color, x, y, z, o) {
+  o = o || {};
+  const detail = o.detail !== undefined ? o.detail : 1;
+  const g = geo('i' + r + '_' + detail, () => new THREE.IcosahedronGeometry(r, detail));
+  const m = new THREE.Mesh(g, o.material || mat(color, o.matOpts || { flatShading: true }));
+  m.position.set(x, y, z);
+  m.castShadow = o.cast !== undefined ? o.cast : true; m.receiveShadow = true;
+  (o.parent || scene).add(m);
+  if (o.collide) addCircle(x, z, r * (o.collideScale || 0.6));
+  return m;
+}
+function rr(c, x, y, w, h, r) {
+  c.beginPath(); c.moveTo(x + r, y);
+  c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath();
+}
+function canvasTexture(w, h, draw) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
+  return t;
+}
+/** Flat sign / picture plane (faces +z unless rotated). */
+function signPlane(w, h, tex, x, y, z, rotY, parent) {
+  const m = new THREE.Mesh(geo('pl' + w + '_' + h, () => new THREE.PlaneGeometry(w, h)),
+    new THREE.MeshLambertMaterial({ map: tex, transparent: true }));
+  m.position.set(x, y, z); m.rotation.y = rotY || 0;
+  (parent || scene).add(m);
+  return m;
+}
+/** Rounded text label sprite (always faces the viewer). */
+function makeLabelSprite(text, o) {
+  o = o || {};
+  const font = o.font || 56, fg = o.fg || '#1d2433', bg = o.bg || 'rgba(255,255,255,0.93)';
+  const c = document.createElement('canvas'), ctx = c.getContext('2d');
+  ctx.font = '700 ' + font + 'px ' + FONT;
+  c.width = Math.ceil(ctx.measureText(text).width + font * 1.1); c.height = Math.round(font * 1.6);
+  ctx.font = '700 ' + font + 'px ' + FONT;
+  rr(ctx, 3, 3, c.width - 6, c.height - 6, c.height / 2 - 3); ctx.fillStyle = bg; ctx.fill();
+  if (o.border) { ctx.lineWidth = 5; ctx.strokeStyle = o.border; ctx.stroke(); }
+  ctx.fillStyle = fg; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, c.width / 2, c.height / 2 + 2);
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, fog: false }));
+  const h = o.height || 0.2;
+  sp.scale.set(h * c.width / c.height, h, 1);
+  sp.renderOrder = 10;
+  return sp;
+}
+function makeIconSprite(icon, bgColor, size) {
+  const tex = canvasTexture(128, 128, (c) => {
+    c.fillStyle = bgColor; c.beginPath(); c.arc(64, 64, 60, 0, Math.PI * 2); c.fill();
+    c.lineWidth = 6; c.strokeStyle = '#fff'; c.stroke();
+    drawIcon(c, icon, 64, 64, 74, '#fff', bgColor);
+  });
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, fog: false }));
+  sp.scale.set(size || 0.26, size || 0.26, 1); sp.renderOrder = 11;
+  return sp;
+}
+
+/* ---------- Simple vector icons (drawn in unit space −0.5..0.5) ---------- */
+const ICON_DRAW = {
+  stop(c, fg, bg) { c.beginPath(); for (let i = 0; i < 8; i++) { const a = Math.PI / 8 + i * Math.PI / 4; c.lineTo(Math.cos(a) * 0.43, Math.sin(a) * 0.43); } c.closePath(); c.fill(); c.fillStyle = bg; c.fillRect(-0.25, -0.065, 0.5, 0.13); },
+  warn(c) { c.lineWidth = 0.08; c.beginPath(); c.moveTo(0, -0.38); c.lineTo(0.42, 0.34); c.lineTo(-0.42, 0.34); c.closePath(); c.stroke(); c.fillRect(-0.04, -0.13, 0.08, 0.27); c.beginPath(); c.arc(0, 0.23, 0.05, 0, 7); c.fill(); },
+  water(c) { c.beginPath(); c.moveTo(0, -0.42); c.bezierCurveTo(0.12, -0.22, 0.3, -0.02, 0.3, 0.12); c.arc(0, 0.12, 0.3, 0, Math.PI); c.bezierCurveTo(-0.3, -0.02, -0.12, -0.22, 0, -0.42); c.fill(); },
+  bag(c, fg, bg) { rr(c, -0.3, -0.16, 0.6, 0.54, 0.1); c.fill(); c.lineWidth = 0.08; c.beginPath(); c.arc(0, -0.16, 0.15, Math.PI, 0); c.stroke(); c.fillStyle = bg; rr(c, -0.17, 0.08, 0.34, 0.17, 0.05); c.fill(); },
+  shoe(c) { c.beginPath(); c.moveTo(-0.4, 0.22); c.lineTo(-0.4, -0.22); c.lineTo(-0.12, -0.22); c.lineTo(-0.02, -0.05); c.quadraticCurveTo(0.38, -0.02, 0.4, 0.15); c.lineTo(0.4, 0.22); c.closePath(); c.fill(); },
+  book(c) { c.beginPath(); c.moveTo(-0.42, -0.26); c.quadraticCurveTo(-0.2, -0.34, -0.03, -0.24); c.lineTo(-0.03, 0.32); c.quadraticCurveTo(-0.2, 0.24, -0.42, 0.3); c.closePath(); c.fill(); c.beginPath(); c.moveTo(0.42, -0.26); c.quadraticCurveTo(0.2, -0.34, 0.03, -0.24); c.lineTo(0.03, 0.32); c.quadraticCurveTo(0.2, 0.24, 0.42, 0.3); c.closePath(); c.fill(); },
+  page(c, fg, bg) { rr(c, -0.28, -0.38, 0.56, 0.76, 0.06); c.fill(); c.fillStyle = bg; for (let i = 0; i < 4; i++) c.fillRect(-0.18, -0.24 + i * 0.14, 0.36, 0.05); },
+  ball(c, fg, bg) { c.beginPath(); c.arc(0, 0, 0.38, 0, 7); c.fill(); c.fillStyle = bg; c.strokeStyle = bg; c.beginPath(); for (let i = 0; i < 5; i++) { const a = -Math.PI / 2 + i * 2 * Math.PI / 5; c.lineTo(Math.cos(a) * 0.14, Math.sin(a) * 0.14); } c.closePath(); c.fill(); c.lineWidth = 0.04; for (let i = 0; i < 5; i++) { const a = -Math.PI / 2 + i * 2 * Math.PI / 5; c.beginPath(); c.moveTo(Math.cos(a) * 0.14, Math.sin(a) * 0.14); c.lineTo(Math.cos(a) * 0.37, Math.sin(a) * 0.37); c.stroke(); } },
+  bike(c) { c.lineWidth = 0.06; c.beginPath(); c.arc(-0.24, 0.14, 0.17, 0, 7); c.stroke(); c.beginPath(); c.arc(0.24, 0.14, 0.17, 0, 7); c.stroke(); c.beginPath(); c.moveTo(-0.24, 0.14); c.lineTo(-0.06, -0.12); c.lineTo(0.14, -0.12); c.lineTo(0.24, 0.14); c.moveTo(-0.24, 0.14); c.lineTo(0.02, 0.14); c.lineTo(0.14, -0.12); c.moveTo(-0.16, -0.22); c.lineTo(-0.02, -0.22); c.moveTo(0.1, -0.24); c.lineTo(0.2, -0.24); c.stroke(); },
+  car(c, fg, bg) { rr(c, -0.42, -0.04, 0.84, 0.24, 0.08); c.fill(); c.beginPath(); c.moveTo(-0.24, -0.04); c.lineTo(-0.14, -0.24); c.lineTo(0.16, -0.24); c.lineTo(0.26, -0.04); c.closePath(); c.fill(); c.fillStyle = bg; [-0.22, 0.22].forEach(x => { c.beginPath(); c.arc(x, 0.22, 0.11, 0, 7); c.fill(); }); c.fillStyle = fg; [-0.22, 0.22].forEach(x => { c.beginPath(); c.arc(x, 0.22, 0.065, 0, 7); c.fill(); }); },
+  home(c, fg, bg) { c.beginPath(); c.moveTo(0, -0.4); c.lineTo(0.42, -0.02); c.lineTo(0.3, -0.02); c.lineTo(0.3, 0.38); c.lineTo(-0.3, 0.38); c.lineTo(-0.3, -0.02); c.lineTo(-0.42, -0.02); c.closePath(); c.fill(); c.fillStyle = bg; c.fillRect(-0.08, 0.13, 0.16, 0.25); },
+  tree(c) { c.fillRect(-0.055, 0.05, 0.11, 0.36); c.beginPath(); c.arc(0, -0.09, 0.3, 0, 7); c.fill(); },
+  pin(c, fg, bg) { c.beginPath(); c.arc(0, -0.1, 0.27, Math.PI * 0.82, Math.PI * 2.18); c.lineTo(0, 0.42); c.closePath(); c.fill(); c.fillStyle = bg; c.beginPath(); c.arc(0, -0.1, 0.1, 0, 7); c.fill(); },
+  hand(c) { rr(c, -0.22, -0.04, 0.44, 0.42, 0.12); c.fill(); for (let i = 0; i < 4; i++) { rr(c, -0.215 + i * 0.115, -0.38, 0.09, 0.42, 0.045); c.fill(); } c.save(); c.translate(-0.24, 0.1); c.rotate(-0.65); rr(c, -0.045, -0.22, 0.09, 0.26, 0.045); c.fill(); c.restore(); },
+  arrowUp(c) { c.beginPath(); c.moveTo(0, -0.42); c.lineTo(0.34, -0.04); c.lineTo(0.12, -0.04); c.lineTo(0.12, 0.4); c.lineTo(-0.12, 0.4); c.lineTo(-0.12, -0.04); c.lineTo(-0.34, -0.04); c.closePath(); c.fill(); },
+  arrow(c) { c.beginPath(); c.moveTo(0.42, 0); c.lineTo(0.04, -0.34); c.lineTo(0.04, -0.12); c.lineTo(-0.4, -0.12); c.lineTo(-0.4, 0.12); c.lineTo(0.04, 0.12); c.lineTo(0.04, 0.34); c.closePath(); c.fill(); },
+  walk(c) { c.beginPath(); c.ellipse(-0.14, 0.1, 0.11, 0.2, -0.15, 0, 7); c.fill(); c.beginPath(); c.ellipse(0.14, -0.16, 0.11, 0.2, 0.15, 0, 7); c.fill(); c.beginPath(); c.ellipse(-0.17, 0.38, 0.08, 0.05, 0, 0, 7); c.fill(); c.beginPath(); c.ellipse(0.17, 0.12, 0.08, 0.05, 0, 0, 7); c.fill(); },
+  clock(c) { c.lineWidth = 0.08; c.beginPath(); c.arc(0, 0, 0.36, 0, 7); c.stroke(); c.beginPath(); c.moveTo(0, 0); c.lineTo(0, -0.22); c.moveTo(0, 0); c.lineTo(0.16, 0.08); c.stroke(); },
+  question(c) { c.lineWidth = 0.11; c.beginPath(); c.arc(0, -0.13, 0.18, Math.PI * 1.05, Math.PI * 2.5); c.lineTo(0, 0.13); c.stroke(); c.beginPath(); c.arc(0, 0.32, 0.065, 0, 7); c.fill(); },
+  smile(c) { c.lineWidth = 0.07; c.beginPath(); c.arc(0, 0, 0.38, 0, 7); c.stroke(); c.beginPath(); c.arc(-0.13, -0.1, 0.05, 0, 7); c.arc(0.13, -0.1, 0.05, 0, 7); c.fill(); c.beginPath(); c.arc(0, 0.02, 0.2, 0.15 * Math.PI, 0.85 * Math.PI); c.stroke(); },
+  people(c) { c.beginPath(); c.arc(-0.16, -0.18, 0.12, 0, 7); c.fill(); c.beginPath(); c.arc(0.18, -0.12, 0.1, 0, 7); c.fill(); c.beginPath(); c.arc(-0.16, 0.34, 0.22, Math.PI, 0); c.fill(); c.beginPath(); c.arc(0.18, 0.34, 0.18, Math.PI, 0); c.fill(); },
+  chair(c) { c.lineWidth = 0.09; c.beginPath(); c.moveTo(-0.2, -0.38); c.lineTo(-0.2, 0.38); c.moveTo(-0.2, 0.04); c.lineTo(0.22, 0.04); c.lineTo(0.22, 0.38); c.stroke(); },
+  heart(c) { c.beginPath(); c.moveTo(0, 0.36); c.bezierCurveTo(-0.5, 0.0, -0.3, -0.42, 0, -0.16); c.bezierCurveTo(0.3, -0.42, 0.5, 0.0, 0, 0.36); c.fill(); },
+  star(c) { c.beginPath(); for (let i = 0; i < 10; i++) { const r = i % 2 ? 0.18 : 0.42, a = -Math.PI / 2 + i * Math.PI / 5; c.lineTo(Math.cos(a) * r, Math.sin(a) * r); } c.closePath(); c.fill(); },
+  pencil(c) { c.save(); c.rotate(Math.PI / 4); c.fillRect(-0.09, -0.38, 0.18, 0.54); c.beginPath(); c.moveTo(-0.09, 0.18); c.lineTo(0.09, 0.18); c.lineTo(0, 0.4); c.closePath(); c.fill(); c.restore(); },
+  speech(c, fg, bg) { rr(c, -0.4, -0.3, 0.8, 0.5, 0.14); c.fill(); c.beginPath(); c.moveTo(-0.18, 0.18); c.lineTo(-0.26, 0.38); c.lineTo(0.02, 0.18); c.fill(); c.fillStyle = bg; [-0.18, 0, 0.18].forEach(x => { c.beginPath(); c.arc(x, -0.05, 0.055, 0, 7); c.fill(); }); },
+  eye(c, fg, bg) { c.beginPath(); c.moveTo(-0.42, 0); c.quadraticCurveTo(0, -0.4, 0.42, 0); c.quadraticCurveTo(0, 0.4, -0.42, 0); c.fill(); c.fillStyle = bg; c.beginPath(); c.arc(0, 0, 0.13, 0, 7); c.fill(); },
+  box(c) { rr(c, -0.3, -0.3, 0.6, 0.6, 0.08); c.fill(); },
+  play(c) { rr(c, -0.37, 0.03, 0.33, 0.33, 0.05); c.fill(); rr(c, 0.04, 0.03, 0.33, 0.33, 0.05); c.fill(); rr(c, -0.165, -0.36, 0.33, 0.33, 0.05); c.fill(); },
+  pause(c) { rr(c, -0.24, -0.32, 0.16, 0.64, 0.05); c.fill(); rr(c, 0.08, -0.32, 0.16, 0.64, 0.05); c.fill(); },
+  listen(c) { c.lineWidth = 0.07; c.beginPath(); c.arc(-0.3, 0, 0.06, 0, 7); c.fill(); [0.18, 0.32, 0.46].forEach(r => { c.beginPath(); c.arc(-0.3, 0, r, -0.75, 0.75); c.stroke(); }); },
+  sun(c) { c.beginPath(); c.arc(0, 0, 0.18, 0, 7); c.fill(); c.lineWidth = 0.07; for (let i = 0; i < 8; i++) { const a = i * Math.PI / 4; c.beginPath(); c.moveTo(Math.cos(a) * 0.27, Math.sin(a) * 0.27); c.lineTo(Math.cos(a) * 0.41, Math.sin(a) * 0.41); c.stroke(); } }
+};
+function drawIcon(ctx, name, cx, cy, size, fg, bg, negated) {
+  ctx.save(); ctx.translate(cx, cy); ctx.scale(size, size);
+  ctx.fillStyle = fg; ctx.strokeStyle = fg; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.lineWidth = 0.08;
+  (ICON_DRAW[name] || ICON_DRAW.speech)(ctx, fg, bg);
+  if (negated) { // a clear diagonal "not" stroke, outlined so it reads on any icon
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = bg; ctx.lineWidth = 0.2; ctx.beginPath(); ctx.moveTo(-0.44, -0.44); ctx.lineTo(0.44, 0.44); ctx.stroke();
+    ctx.strokeStyle = fg; ctx.lineWidth = 0.09; ctx.beginPath(); ctx.moveTo(-0.44, -0.44); ctx.lineTo(0.44, 0.44); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/* =====================================================================
+   3. COLLISION — list of solid footprints (only reachable objects)
+   Static: axis-aligned boxes + circles. Characters are tested from their
+   CURRENT position every frame, so moving things never leave colliders behind.
+   ===================================================================== */
+const staticAABBs = [], staticCircles = [];
+function addAABB(minX, maxX, minZ, maxZ) { staticAABBs.push({ minX, maxX, minZ, maxZ }); }
+function addCircle(x, z, r) { staticCircles.push({ x, z, r }); }
+function collides(x, z) {
+  for (const b of staticAABBs)
+    if (x + PLAYER_R > b.minX && x - PLAYER_R < b.maxX && z + PLAYER_R > b.minZ && z - PLAYER_R < b.maxZ) return true;
+  for (const c of staticCircles) { const dx = x - c.x, dz = z - c.z, r = c.r + PLAYER_R; if (dx * dx + dz * dz < r * r) return true; }
+  for (const ch of characters) { const p = ch.group.position, dx = x - p.x, dz = z - p.z, r = ch.radius + PLAYER_R; if (dx * dx + dz * dz < r * r) return true; }
+  return false;
+}
+/** Axis-separated slide: try X, then Z. Returns the allowed [dx, dz]. */
+function resolveMove(px, pz, dx, dz) {
+  if (collides(px, pz)) return [dx, dz]; // already overlapping (e.g. VR physical step) → let them move out
+  let nx = px + dx; if (collides(nx, pz)) nx = px;
+  let nz = pz + dz; if (collides(nx, nz)) nz = pz;
+  return [nx - px, nz - pz];
+}
+
+/* =====================================================================
+   4. ENVIRONMENT CONSTRUCTION
+   Layout (metres): school building north (z −14…−5), open corridor (z −5…−1),
+   playground (z −1…22), boundary wall + gate at z = 22, road outside.
+   ===================================================================== */
+const C = {
+  grass: '#A9CF88', sand: '#EBD9AC', path: '#DCCBAA', corridor: '#ECE3D1', classFloor: '#F2E7D2',
+  wall: '#F6E6C8', trim: '#D57C55', roof: '#C66C4D', boundary: '#ECD4B2', coping: '#D8B488',
+  wood: '#C99A6B', woodDark: '#A97B52', metal: '#7D8CA3', board: '#2F5D50', window: '#BFE2F4', door: '#8C5A3C'
+};
+const interactiveObjects = []; // {keys:[labels], obj} — used for in-world visual cues
+function registerObject(keys, obj) { interactiveObjects.push({ keys, obj }); }
+
+function buildGround() {
+  const g = new THREE.Mesh(new THREE.PlaneGeometry(260, 260), mat(C.grass));
+  g.rotation.x = -Math.PI / 2; g.receiveShadow = true; scene.add(g);
+  box(11.5, 0.02, 12.5, C.sand, -9, 0, 8.75, { cast: false });            // sand pit for play equipment
+  box(2.6, 0.025, 23, C.path, 0, 0, 10.5, { cast: false });               // path gate → corridor
+  box(20, 0.04, 4, C.corridor, 0, 0, -3, { cast: false });                // corridor floor
+  box(12, 0.03, 9, C.classFloor, 0, 0, -9.5, { cast: false });            // classroom floor
+}
+
+function buildSchoolBuilding() {
+  const H = 3.2;
+  // Classroom walls (door gap on the south wall at x −1.1…1.1)
+  box(12.2, H, 0.2, C.wall, 0, 0, -14, { collide: true });
+  box(0.2, H, 9, C.wall, -6, 0, -9.5, { collide: true });
+  box(0.2, H, 9, C.wall, 6, 0, -9.5, { collide: true });
+  box(4.9, H, 0.2, C.wall, -3.55, 0, -5, { collide: true });
+  box(4.9, H, 0.2, C.wall, 3.55, 0, -5, { collide: true });
+  box(2.2, 0.9, 0.2, C.wall, 0, 2.3, -5);                                     // lintel
+  box(0.12, 2.3, 0.26, C.trim, -1.12, 0, -5); box(0.12, 2.3, 0.26, C.trim, 1.12, 0, -5);
+  // Door leaf, opened inwards against the wall
+  box(0.06, 2.2, 1.0, C.door, 1.18, 0, -5.62, { collide: true });
+  // Windows on the corridor wall (both faces)
+  [-3.6, 3.6].forEach(x => {
+    [-4.88, -5.12].forEach(z => {
+      box(2.2, 1.0, 0.02, C.window, x, 1.15, z, { cast: false });
+      box(0.06, 1.0, 0.03, C.trim, x, 1.15, z, { cast: false });
+    });
+  });
+  // Office (west) and library (east) blocks — solid, not enterable
+  box(3.9, H, 9.2, '#F3DDBA', -8.05, 0, -9.5, { collide: true });
+  box(3.9, H, 9.2, '#EFE0C2', 8.05, 0, -9.5, { collide: true });
+  box(1.0, 2.1, 0.06, C.door, -8, 0, -4.88, { cast: false });
+  box(1.0, 2.1, 0.06, C.door, 8, 0, -4.88, { cast: false });
+  // Roof slab over everything + terracotta fascia
+  box(20.6, 0.22, 13.6, C.roof, 0, H, -7.6);
+  box(20.8, 0.3, 0.12, C.trim, 0, H - 0.1, -0.8, { cast: false });
+  // Corridor pillars (kept away from the central path)
+  [-9.6, -6, -3, 3, 6, 9.6].forEach(x => cyl(0.17, 0.19, H, '#EADCC2', x, 0, -1.25, { collide: true, pad: 0.02 }));
+  // Signs
+  const sign = (text, bg) => canvasTexture(512, 128, (c, w, h) => {
+    rr(c, 4, 4, w - 8, h - 8, 26); c.fillStyle = bg; c.fill();
+    c.fillStyle = '#fff'; c.font = '800 64px ' + FONT; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(text, w / 2, h / 2 + 3);
+  });
+  signPlane(1.6, 0.4, sign('CLASS 1', '#3F7FD0'), 0, 2.85, -4.87);
+  signPlane(1.6, 0.4, sign('OFFICE', '#8A6F5A'), -8, 2.55, -4.86);
+  signPlane(1.6, 0.4, sign('LIBRARY', '#3F9A55'), 8, 2.55, -4.86);
+  // Notice board on the office wall
+  signPlane(1.6, 1.0, canvasTexture(320, 200, (c, w, h) => {
+    c.fillStyle = '#C79A63'; c.fillRect(0, 0, w, h); c.fillStyle = '#B38755'; c.fillRect(8, 8, w - 16, h - 16);
+    [['#FFF3B0', 22, 20], ['#BDE3FF', 120, 30], ['#FFD1DC', 220, 18], ['#D7F5C9', 40, 110], ['#FFFFFF', 150, 105]].forEach(([col, x, y]) => {
+      c.fillStyle = col; c.fillRect(x, y, 80, 70); c.fillStyle = '#9aa3b2'; for (let i = 0; i < 4; i++) c.fillRect(x + 10, y + 14 + i * 13, 58, 5);
+    });
+  }), -5.95 - 2.6, 1.55, -4.87);
+}
+
+function createDeskBench(x, z) {
+  // Indian-style combined desk + bench for two children; faces the blackboard (−z)
+  box(1.2, 0.05, 0.45, C.wood, x, 0.66, z);
+  box(1.2, 0.5, 0.04, C.woodDark, x, 0.16, z - 0.21);
+  [-0.56, 0.56].forEach(dx => { box(0.05, 0.66, 0.05, C.metal, x + dx, 0, z - 0.18); box(0.05, 0.66, 0.05, C.metal, x + dx, 0, z + 0.18); box(0.05, 0.4, 0.05, C.metal, x + dx, 0, z + 0.58); });
+  box(1.2, 0.05, 0.3, C.wood, x, 0.4, z + 0.5);
+  addAABB(x - 0.62, x + 0.62, z - 0.25, z + 0.68);
+}
+function createSchoolBag(x, y, z, color, rotY) {
+  const g = new THREE.Group(); g.position.set(x, y, z); g.rotation.y = rotY || 0; scene.add(g);
+  const b = box(0.32, 0.36, 0.16, color, 0, 0, 0, { parent: g }); b.castShadow = true;
+  box(0.24, 0.14, 0.04, '#ffffff', 0, 0.06, 0.09, { parent: g, matOpts: { color: '#ffffff', opacity: 0.35, transparent: true } });
+  const handle = new THREE.Mesh(geo('bagHandle', () => new THREE.TorusGeometry(0.07, 0.015, 6, 12, Math.PI)), mat(color));
+  handle.position.y = 0.36; g.add(handle);
+  registerObject(['BAG', 'SCHOOL BAG'], g);
+  return g;
+}
+function createNotebook(x, y, z, color) {
+  const n = box(0.22, 0.02, 0.3, color, x, y, z, { cast: false });
+  box(0.2, 0.004, 0.28, '#ffffff', x, y + 0.02, z, { cast: false });
+  registerObject(['NOTEBOOK', 'BOOK', 'HOMEWORK', 'PAGE 10'], n);
+  return n;
+}
+
+function buildClassroomInterior() {
+  // Blackboard with friendly chalk drawing
+  box(4.3, 1.6, 0.08, C.woodDark, 0, 0.95, -13.86, { cast: false });
+  signPlane(4.0, 1.35, canvasTexture(1024, 346, (c, w, h) => {
+    c.fillStyle = C.board; c.fillRect(0, 0, w, h);
+    c.strokeStyle = 'rgba(255,255,255,0.85)'; c.fillStyle = 'rgba(255,255,255,0.9)'; c.lineWidth = 6;
+    c.font = '700 74px ' + FONT; c.fillText('Good Morning!', 60, 120);
+    c.font = '600 46px ' + FONT; c.fillText('Today: Page 10', 66, 210);
+    c.beginPath(); c.arc(840, 120, 52, 0, 7); c.stroke();
+    for (let i = 0; i < 8; i++) { const a = i * Math.PI / 4; c.beginPath(); c.moveTo(840 + Math.cos(a) * 72, 120 + Math.sin(a) * 72); c.lineTo(840 + Math.cos(a) * 98, 120 + Math.sin(a) * 98); c.stroke(); }
+    c.beginPath(); c.moveTo(640, 290); c.lineTo(700, 230); c.lineTo(760, 290); c.closePath(); c.stroke(); c.strokeRect(655, 290, 90, 40);
+  }), 0, 1.75, -13.81);
+  // Teacher's desk + chair
+  box(1.6, 0.76, 0.7, C.woodDark, 0, 0, -12.0, { collide: true });
+  box(0.45, 0.45, 0.45, C.wood, -0.3, 0, -12.75, { collide: true });
+  createNotebook(0.35, 0.76, -12.0, '#E46B5A');
+  box(0.3, 0.04, 0.2, '#F2C14E', -0.35, 0.76, -11.9, { cast: false });
+  // Student desk-benches, 4 columns × 3 rows with a central aisle
+  const cols = [-4.0, -1.7, 1.7, 4.0], rows = [-10.0, -8.3, -6.6];
+  const bagColors = ['#E46B5A', '#4F8EDC', '#F2C14E', '#6BBF7A', '#B07CD8', '#F08FB0'];
+  let k = 0;
+  rows.forEach(z => cols.forEach(x => {
+    createDeskBench(x, z);
+    if (k % 2 === 0) createSchoolBag(x + 0.32, 0.43, z + 0.5, bagColors[k % bagColors.length], 0.2);
+    if (k % 3 !== 1) createNotebook(x - 0.25, 0.71, z, ['#7FB8F0', '#F2A65A', '#9ED39A'][k % 3]);
+    k++;
+  }));
+  // Bookshelf on the west wall
+  box(0.4, 1.7, 2.2, C.woodDark, -5.68, 0, -11.2, { collide: true });
+  for (let s = 0; s < 3; s++) for (let i = 0; i < 7; i++)
+    box(0.25, 0.32 + (i % 3) * 0.04, 0.12, ['#E46B5A', '#4F8EDC', '#F2C14E', '#6BBF7A', '#B07CD8'][(i + s) % 5], -5.6, 0.18 + s * 0.52, -12.1 + i * 0.28, { cast: false });
+  // Ceiling: two soft tube-lights + one fan (static — no motion overhead)
+  [-3, 3].forEach(x => box(1.2, 0.05, 0.1, '#ffffff', x, 3.12, -9.5, { cast: false, matOpts: { emissive: '#fff8e6', emissiveIntensity: 0.9 } }));
+  cyl(0.02, 0.02, 0.5, C.metal, 0, 2.62, -9, { cast: false });
+  cyl(0.12, 0.12, 0.08, '#e9e2d6', 0, 2.6, -9, { cast: false });
+  for (let i = 0; i < 3; i++) { const b = box(0.75, 0.015, 0.12, '#e9e2d6', 0, 2.64, -9, { cast: false }); b.rotation.y = i * Math.PI * 2 / 3; b.position.x = Math.cos(-i * Math.PI * 2 / 3) * 0.42; b.position.z = -9 + Math.sin(-i * Math.PI * 2 / 3) * 0.42; }
+  // Soft interior fill light (no shadows, cheap)
+  const pl = new THREE.PointLight(0xFFF2DA, 22, 14, 2); pl.position.set(0, 2.9, -9.5); scene.add(pl);
+  // Shoe rack outside the classroom door
+  box(1.3, 0.5, 0.35, C.woodDark, 2.5, 0, -4.7, { collide: true });
+  const rack = new THREE.Group(); scene.add(rack);
+  for (let i = 0; i < 5; i++) box(0.12, 0.08, 0.22, ['#E46B5A', '#4F8EDC', '#333', '#F2C14E', '#6BBF7A'][i], 1.98 + i * 0.26, 0.5, -4.7, { parent: rack, cast: false });
+  rack.position.set(0, 0, 0);
+  registerObject(['SHOES', 'SOCKS'], rack.children[2]);
+  // Pause Point corner
+  buildPausePointCorner();
+}
+
+/** Calm corner from the Pause Point concept: soft rug, cushions, dim lamp, signal cards. */
+function buildPausePointCorner() {
+  const cx = 4.6, cz = -12.6;
+  const rug = new THREE.Mesh(geo('rug', () => new THREE.CircleGeometry(1.05, 28)), mat('#9CC7E6'));
+  rug.rotation.x = -Math.PI / 2; rug.position.set(cx, 0.035, cz); rug.receiveShadow = true; scene.add(rug);
+  const c1 = ball(0.38, '#F2B5A0', 4.15, 0.22, -12.95, { detail: 2, collide: true, collideScale: 0.9 }); c1.scale.y = 0.6;
+  const c2 = ball(0.36, '#A7D3C9', 5.15, 0.21, -12.25, { detail: 2, collide: true, collideScale: 0.9 }); c2.scale.y = 0.6;
+  // Floor lamp (warm, dim — emissive only)
+  cyl(0.15, 0.18, 0.05, C.metal, 5.5, 0, -13.5, { collide: true });
+  cyl(0.02, 0.02, 1.4, C.metal, 5.5, 0.05, -13.5);
+  cyl(0.14, 0.24, 0.26, '#FFE3B0', 5.5, 1.42, -13.5, { matOpts: { emissive: '#FFCF7A', emissiveIntensity: 0.6 } });
+  // Low shelf divider to make a nook
+  box(0.14, 0.75, 2.0, C.wood, 3.35, 0, -12.85, { collide: true });
+  // Headphones on a little stool
+  cyl(0.18, 0.18, 0.35, C.wood, 3.75, 0, -13.6, { collide: true });
+  const hp = new THREE.Mesh(geo('hp', () => new THREE.TorusGeometry(0.09, 0.015, 6, 14, Math.PI)), mat('#4F5D75'));
+  hp.position.set(3.75, 0.4, -13.6); scene.add(hp);
+  ball(0.04, '#4F5D75', 3.66, 0.39, -13.6, { detail: 1 }); ball(0.04, '#4F5D75', 3.84, 0.39, -13.6, { detail: 1 });
+  // Non-verbal signal cards on the east wall
+  const cards = [['Too loud', '#8466CF', 'listen'], ['Too bright', '#D08A22', 'sun'], ['Need a break', '#3F9A55', 'pause'], ['Need help', '#3F7FD0', 'hand']];
+  cards.forEach(([label, col, icon], i) => {
+    const tex = canvasTexture(256, 320, (c, w, h) => {
+      rr(c, 6, 6, w - 12, h - 12, 26); c.fillStyle = col; c.fill();
+      drawIcon(c, icon, w / 2, 120, 150, '#fff', col);
+      c.fillStyle = '#fff'; c.font = '800 36px ' + FONT; c.textAlign = 'center'; c.fillText(label, w / 2, 270);
+    });
+    signPlane(0.42, 0.52, tex, 5.88, 1.35, -13.45 + i * 0.55, -Math.PI / 2);
+  });
+  signPlane(1.5, 0.36, canvasTexture(512, 124, (c, w, h) => {
+    rr(c, 4, 4, w - 8, h - 8, 30); c.fillStyle = '#5E8FB8'; c.fill();
+    c.fillStyle = '#fff'; c.font = '800 58px ' + FONT; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('PAUSE POINT', w / 2, h / 2 + 3);
+  }), 5.88, 2.1, -12.6, -Math.PI / 2);
+}
+
+function createBench(x, z, alongX) {
+  const w = 1.6, d = 0.45;
+  const sx = alongX ? w : d, sz = alongX ? d : w;
+  box(sx, 0.06, sz, C.wood, x, 0.42, z);
+  box(alongX ? w : 0.06, 0.35, alongX ? 0.06 : w, C.wood, x + (alongX ? 0 : -0.2), 0.5, z + (alongX ? -0.2 : 0));
+  [-0.65, 0.65].forEach(o => box(alongX ? 0.06 : 0.4, 0.42, alongX ? 0.4 : 0.06, C.metal, x + (alongX ? o : 0), 0, z + (alongX ? 0 : o)));
+  addAABB(x - sx / 2, x + sx / 2, z - sz / 2, z + sz / 2);
+}
+function createTree(x, z, s, collide) {
+  s = s || 1;
+  cyl(0.12 * s, 0.17 * s, 1.4 * s, '#8A6446', x, 0, z, { collide: !!collide, seg: 7 });
+  ball(0.95 * s, '#7DBB6E', x, 1.9 * s, z, { detail: 1 });
+  ball(0.7 * s, '#8FCB7E', x + 0.35 * s, 2.45 * s, z + 0.15 * s, { detail: 1 });
+}
+function createPlanter(x, z) {
+  cyl(0.28, 0.2, 0.45, C.trim, x, 0, z, { collide: true, seg: 10 });
+  ball(0.32, '#6FAF63', x, 0.62, z, { detail: 1 });
+}
+
+function buildCorridor() {
+  // Wet-floor sign + puddle (helper says: careful, wet floor)
+  const sign = new THREE.Group(); sign.position.set(5.0, 0, -2.7); scene.add(sign);
+  const p1 = box(0.4, 0.7, 0.03, '#F4C542', 0, 0, 0.1, { parent: sign }); p1.rotation.x = -0.25;
+  const p2 = box(0.4, 0.7, 0.03, '#F4C542', 0, 0, -0.1, { parent: sign }); p2.rotation.x = 0.25;
+  const warnTex = canvasTexture(128, 128, (c) => { drawIcon(c, 'warn', 64, 64, 110, '#1d2433', '#F4C542'); });
+  const wp = signPlane(0.28, 0.28, warnTex, 0, 0.42, 0.2, 0, sign); wp.rotation.x = -0.25;
+  addCircle(5.0, -2.7, 0.32);
+  registerObject(['WET FLOOR', 'CAREFUL', 'WALK SLOWLY'], sign);
+  const puddle = new THREE.Mesh(geo('puddle', () => new THREE.CircleGeometry(0.7, 22)),
+    new THREE.MeshLambertMaterial({ color: '#AFD8F2', transparent: true, opacity: 0.55 }));
+  puddle.rotation.x = -Math.PI / 2; puddle.scale.set(1, 0.7, 1); puddle.position.set(5.6, 0.045, -2.3); scene.add(puddle);
+  // Drinking water station
+  const cooler = box(0.7, 1.2, 0.5, '#7FA9C9', 9.0, 0, -4.6, { collide: true });
+  box(0.5, 0.04, 0.2, C.metal, 9.0, 0.9, -4.3, { cast: false });
+  registerObject(['WATER BOTTLE', 'BOTTLE', 'DRINK WATER', 'WASH HANDS'], cooler);
+  // Benches + planters
+  createBench(-8.2, -4.6, true);
+  createBench(-3.7, -4.6, true);
+  [-7.8, -4.5, 4.5, 7.8].forEach(x => createPlanter(x, -0.75));
+}
+
+function buildPlayground() {
+  // Swing set (static seats; no swinging motion)
+  const sx = -10.5, sz = 5.5;
+  [-1.7, 1.7].forEach(dx => {
+    const l1 = cyl(0.06, 0.06, 2.6, '#4B88C7', sx + dx, 0, sz - 0.35, { cast: true }); l1.rotation.x = 0.25; l1.position.y = 1.25;
+    const l2 = cyl(0.06, 0.06, 2.6, '#4B88C7', sx + dx, 0, sz + 0.35, { cast: true }); l2.rotation.x = -0.25; l2.position.y = 1.25;
+  });
+  const bar = cyl(0.06, 0.06, 3.5, '#4B88C7', sx, 0, sz); bar.rotation.z = Math.PI / 2; bar.position.y = 2.5;
+  [-0.7, 0.7].forEach(dx => {
+    cyl(0.012, 0.012, 2.0, '#555', sx + dx - 0.2, 0.5, sz, { cast: false });
+    cyl(0.012, 0.012, 2.0, '#555', sx + dx + 0.2, 0.5, sz, { cast: false });
+    const seat = box(0.5, 0.05, 0.22, '#F2B134', sx + dx, 0.48, sz);
+    registerObject(['SWING'], seat);
+  });
+  addAABB(sx - 1.9, sx + 1.9, sz - 0.75, sz + 0.75);
+  // Slide
+  const slx = -6.8, slz = 10.8;
+  [-0.32, 0.32].forEach(dx => { box(0.06, 1.6, 0.06, '#4B88C7', slx + dx, 0, slz - 0.9); box(0.06, 1.6, 0.06, '#4B88C7', slx + dx, 0, slz - 0.3); });
+  for (let i = 0; i < 5; i++) box(0.64, 0.04, 0.05, '#4B88C7', slx, 0.3 + i * 0.3, slz - 0.92);
+  box(0.75, 0.08, 0.7, '#4B88C7', slx, 1.55, slz - 0.6);
+  const chute = box(0.65, 0.06, 2.2, '#F2B134', slx, 0, slz + 0.35); chute.position.y = 0.85; chute.rotation.x = 0.62;
+  registerObject(['SLIDE'], chute);
+  addAABB(slx - 0.45, slx + 0.45, slz - 1.0, slz + 1.35);
+  // See-saw
+  const ssx = -11.2, ssz = 12.0;
+  const pivotBase = new THREE.Mesh(geo('ssBase', () => new THREE.ConeGeometry(0.25, 0.45, 3)), mat('#4B88C7'));
+  pivotBase.position.set(ssx, 0.22, ssz); pivotBase.castShadow = true; scene.add(pivotBase);
+  const plank = box(3.0, 0.07, 0.28, '#E46B5A', ssx, 0.42, ssz); plank.rotation.z = 0.12;
+  registerObject(['SEE-SAW'], plank);
+  addAABB(ssx - 1.55, ssx + 1.55, ssz - 0.2, ssz + 0.2);
+  // Football goal + ball
+  const gx = 12.2, gz = 10;
+  [-1.3, 1.3].forEach(dz => { cyl(0.05, 0.05, 1.7, '#ffffff', gx, 0, gz + dz, { collide: true }); cyl(0.04, 0.04, 1.7, '#e6e6e6', gx + 1, 0, gz + dz, { cast: false }); });
+  const cb = cyl(0.05, 0.05, 2.6, '#ffffff', gx, 1.65, gz); cb.rotation.x = Math.PI / 2; cb.position.y = 1.7;
+  const net = box(1.0, 1.7, 2.6, '#ffffff', gx + 0.5, 0, gz, { cast: false, matOpts: { transparent: true, opacity: 0.18 } });
+  net.renderOrder = 2;
+  const fb = ball(0.12, '#ffffff', 9.6, 0.12, 9.6, { detail: 1 });
+  [[0, 0.1, 0.06], [0.08, 0.03, -0.06], [-0.08, 0.05, -0.05]].forEach(([dx, dy, dz]) => ball(0.04, '#2b2f3a', 9.6 + dx, 0.12 + dy, 9.6 + dz, { detail: 0, cast: false }));
+  registerObject(['FOOTBALL', 'BALL', 'KICK', 'PLAY'], fb);
+  // Benches, trees, flower beds
+  createBench(3.6, 3.0, false);
+  createBench(-3.6, 16.5, true);
+  createBench(14.6, 14.0, false);
+  [[-14.2, 1], [-14.0, 18.5], [14.2, -0.5], [14.4, 19], [5.6, 17.2], [-7.5, 18.4], [14.3, 5.5], [-14.4, 13], [13.2, -13.5], [-13.2, -13.5]]
+    .forEach(([x, z], i) => createTree(x, z, 0.9 + (i % 3) * 0.12, true));
+  [[-2.5, 19.2], [2.5, 19.2]].forEach(([x, z]) => {
+    box(1.6, 0.25, 0.8, C.coping, x, 0, z, { collide: true });
+    for (let i = 0; i < 4; i++) ball(0.12, ['#F08FB0', '#F2C14E', '#B07CD8', '#ffffff'][i], x - 0.6 + i * 0.4, 0.34, z, { detail: 1, cast: false });
+  });
+}
+
+function buildBoundaryAndGate() {
+  const h = 1.5, t = 0.25;
+  const seg = (x1, z1, x2, z2) => {
+    const w = Math.abs(x2 - x1) || t, d = Math.abs(z2 - z1) || t;
+    box(w, h, d, C.boundary, (x1 + x2) / 2, 0, (z1 + z2) / 2, { collide: true });
+    box(w + 0.08, 0.1, d + 0.08, C.coping, (x1 + x2) / 2, h, (z1 + z2) / 2, { cast: false });
+  };
+  seg(-16, -16, 16, -16); seg(-16, -16, -16, 22); seg(16, -16, 16, 22);
+  seg(-16, 22, -2.65, 22); seg(2.65, 22, 16, 22);
+  // Gate pillars + arch sign + closed gate bars
+  [-2.65, 2.65].forEach(x => { box(0.5, 2.2, 0.5, C.coping, x, 0, 22, { collide: true }); ball(0.16, '#FFF4D6', x, 2.35, 22, { detail: 1, matOpts: { emissive: '#FFE7A8', emissiveIntensity: 0.4 } }); });
+  box(5.8, 0.45, 0.2, C.trim, 0, 2.6, 22);
+  const archTex = canvasTexture(1024, 96, (c, w, hh) => { c.fillStyle = C.trim; c.fillRect(0, 0, w, hh); c.fillStyle = '#fff'; c.font = '800 54px ' + FONT; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('SUNRISE FOUNDATION SCHOOL', w / 2, hh / 2 + 3); });
+  signPlane(5.7, 0.42, archTex, 0, 2.825, 21.88, Math.PI);
+  signPlane(5.7, 0.42, archTex, 0, 2.825, 22.12, 0);
+  for (let x = -2.3; x <= 2.31; x += 0.23) cyl(0.022, 0.022, 1.45, '#56627A', x, 0, 22, { cast: false, seg: 6 });
+  box(4.9, 0.06, 0.06, '#56627A', 0, 0.2, 22, { cast: false }); box(4.9, 0.06, 0.06, '#56627A', 0, 1.35, 22, { cast: false });
+  addAABB(-2.45, 2.45, 21.85, 22.15);
+  // Guard booth
+  box(1.6, 2.3, 1.6, '#DCD5C6', 6.2, 0, 20.3, { collide: true });
+  box(1.9, 0.12, 1.9, C.roof, 6.2, 2.3, 20.3);
+  box(0.9, 0.6, 0.02, C.window, 6.2, 1.2, 19.49, { cast: false });
+}
+
+/** Road outside the gate with a moving bicycle (no collider: it is never reachable). */
+let bicycle = null;
+function buildRoadAndBicycle() {
+  box(130, 0.02, 5.2, '#7C828B', 0, 0, 25.9, { cast: false });
+  box(130, 0.06, 1.0, '#CFC7B8', 0, 0, 22.9, { cast: false });
+  for (let x = -60; x <= 60; x += 4) box(1.8, 0.005, 0.12, '#F2F2F2', x, 0.022, 25.9, { cast: false });
+  // Houses across the road (cheap, no shadows)
+  const cols = ['#F4C7A1', '#C9E2F2', '#F7E1A8', '#D6EAC8', '#F2C4CE', '#E8D7F1'];
+  for (let i = 0; i < 9; i++) {
+    const x = -32 + i * 8, w = 5 + (i % 3), hh = 3 + (i % 2) * 2.5;
+    box(w, hh, 5, cols[i % cols.length], x, 0, 33, { cast: false, receive: false });
+    box(w + 0.4, 0.25, 5.4, C.roof, x, hh, 33, { cast: false, receive: false });
+    box(1.0, 1.2, 0.04, C.window, x - 1, 1.2, 30.47, { cast: false, receive: false });
+  }
+  // Bicycle + rider
+  const g = new THREE.Group(); scene.add(g);
+  const wheelGeo = new THREE.TorusGeometry(0.33, 0.035, 6, 18);
+  const wheels = [-0.55, 0.55].map(x => { const w = new THREE.Mesh(wheelGeo, mat('#2b2f3a')); w.position.set(x, 0.35, 0); w.castShadow = true; g.add(w); return w; });
+  const frame = (x1, y1, x2, y2) => {
+    const len = Math.hypot(x2 - x1, y2 - y1);
+    const m = new THREE.Mesh(geo('bf', () => new THREE.CylinderGeometry(0.025, 0.025, 1, 6)), mat('#D94F4F'));
+    m.scale.y = len; m.position.set((x1 + x2) / 2, (y1 + y2) / 2, 0); m.rotation.z = Math.atan2(x1 - x2, y2 - y1); g.add(m);
+  };
+  frame(-0.55, 0.35, -0.05, 0.35); frame(-0.05, 0.35, 0.4, 0.82); frame(-0.55, 0.35, -0.2, 0.85); frame(-0.2, 0.85, 0.4, 0.82); frame(0.4, 0.82, 0.55, 0.35); frame(-0.2, 0.85, -0.05, 0.35);
+  const rider = createPerson({ kind: 'adult', skin: '#B97A4F', top: '#4F8EDC', bottom: '#3B3F4A', hair: '#1E1410' });
+  rider.rotation.y = Math.PI / 2; rider.position.set(-0.15, 0.25, 0); rider.scale.setScalar(0.92); g.add(rider);
+  g.position.set(-45, 0, 25.3);
+  registerObject(['BICYCLE', 'DANGER', 'STOP'], g);
+  bicycle = { group: g, wheels, speed: 2.6, wait: 0 };
+}
+function updateBicycle(dt) {
+  if (!bicycle) return;
+  const b = bicycle;
+  if (b.wait > 0) { b.wait -= dt; return; }
+  b.group.position.x += b.speed * dt;
+  b.wheels.forEach(w => { w.rotation.z -= (b.speed / 0.33) * dt; });
+  if (b.group.position.x > 45) { b.group.position.x = -45; b.wait = 6; }
+}
+
+function buildBackground() {
+  // Distant trees as two instanced meshes (cheap), hills and a few clouds
+  const N = 70;
+  const trunkG = new THREE.CylinderGeometry(0.2, 0.28, 2, 6), crownG = new THREE.IcosahedronGeometry(1.6, 0);
+  const trunks = new THREE.InstancedMesh(trunkG, mat('#8A6446'), N), crowns = new THREE.InstancedMesh(crownG, mat('#86BE76', { flatShading: true }), N);
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3();
+  let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for (let i = 0; i < N; i++) {
+    const a = rnd() * Math.PI * 2, r = 40 + rnd() * 28, sc = 0.9 + rnd() * 0.9;
+    const x = Math.cos(a) * r, z = 3 + Math.sin(a) * r;
+    if (z > 22 && z < 40 && Math.abs(x) < 40) { i--; continue; } // keep road + houses clear
+    m4.compose(p.set(x, sc, z), q, s.set(sc, sc, sc)); trunks.setMatrixAt(i, m4);
+    m4.compose(p.set(x, 2.6 * sc, z), q, s.set(sc, sc * 1.1, sc)); crowns.setMatrixAt(i, m4);
+  }
+  scene.add(trunks, crowns);
+  const hillMat = mat('#9CC98A', { flatShading: true });
+  [[-70, -60, 30], [10, -85, 40], [80, -40, 28], [-90, 30, 30], [90, 50, 32]].forEach(([x, z, r]) => {
+    const h = new THREE.Mesh(geo('hill', () => new THREE.IcosahedronGeometry(1, 1)), hillMat);
+    h.scale.set(r, r * 0.35, r); h.position.set(x, -2, z); scene.add(h);
+  });
+  const cloudMat = new THREE.MeshLambertMaterial({ color: '#ffffff', emissive: '#ffffff', emissiveIntensity: 0.35, fog: false, flatShading: true });
+  [[-30, 40, -60], [25, 46, -70], [60, 42, 10], [-60, 44, 20]].forEach(([x, y, z]) => {
+    for (let i = 0; i < 4; i++) {
+      const c = new THREE.Mesh(geo('cloud', () => new THREE.IcosahedronGeometry(1, 1)), cloudMat);
+      c.scale.set(6 - i, 3.2 - i * 0.4, 4.5 - i * 0.6); c.position.set(x + i * 4.5 - 6, y + (i % 2) * 1.2, z + (i % 3)); scene.add(c);
+    }
+  });
+}
+
+/* =====================================================================
+   5. CHARACTER CONSTRUCTION
+   ===================================================================== */
+const UNIT_CYL = new THREE.CylinderGeometry(1, 1, 1, 10);
+const HEAD_GEO = new THREE.SphereGeometry(1, 18, 14);
+/** createPerson(): friendly low-poly person built from primitives. Faces +z. */
+function createPerson(o) {
+  const g = new THREE.Group();
+  const child = o.kind === 'child';
+  const L = child ? 0.5 : 0.8, T = child ? 0.42 : 0.6, R = child ? 0.15 : 0.13;
+  const legR = child ? 0.065 : 0.08, legX = child ? 0.075 : 0.1;
+  const add = (geom, m, x, y, z, sx, sy, sz, shadow) => {
+    const mesh = new THREE.Mesh(geom, m); mesh.position.set(x, y, z); mesh.scale.set(sx, sy, sz);
+    mesh.castShadow = shadow !== false; g.add(mesh); return mesh;
+  };
+  const skin = mat(o.skin), top = mat(o.top), bottom = mat(o.bottom || '#3D4656'), hair = mat(o.hair || '#2A1C14');
+  [-legX, legX].forEach(x => {
+    add(UNIT_CYL, o.dress ? skin : bottom, x, L / 2, 0, legR, L, legR);
+    add(UNIT_BOX, mat('#3A3330'), x, 0.035, 0.03, 0.12, 0.07, 0.2);
+  });
+  if (o.dress) {
+    const dg = geo('dress' + (child ? 'c' : 'a'), () => new THREE.CylinderGeometry(child ? 0.15 : 0.18, child ? 0.27 : 0.33, 1, 14));
+    const dh = child ? L * 0.62 + 0.08 : L * 0.88;
+    add(dg, mat(o.dress), 0, L - dh / 2 + (child ? 0.06 : 0.08), 0, 1, dh, 1);
+  }
+  const tg = geo('torso' + (child ? 'c' : 'a'), () => new THREE.CylinderGeometry(child ? 0.13 : 0.17, child ? 0.15 : 0.19, 1, 14));
+  add(tg, top, 0, L + T / 2, 0, 1, T, 1);
+  if (o.drape) { const d = add(UNIT_BOX, mat(o.drape), 0.02, L + T * 0.55, 0.03, 0.09, T * 1.15, 0.36, true); d.rotation.z = 0.55; }
+  const armLen = child ? 0.38 : 0.56, armR = child ? 0.042 : 0.05, sh = (child ? 0.13 : 0.17) + armR + 0.01;
+  [-1, 1].forEach(sgn => {
+    const a = add(UNIT_CYL, top, sgn * sh, L + T - armLen / 2 - 0.02, 0, armR, armLen, armR); a.rotation.z = sgn * 0.08;
+    add(HEAD_GEO, skin, sgn * (sh + 0.03), L + T - armLen - 0.03, 0, armR * 1.25, armR * 1.25, armR * 1.25);
+  });
+  add(UNIT_CYL, skin, 0, L + T + 0.03, 0, 0.05, 0.06, 0.05);
+  const headY = L + T + 0.06 + R;
+  add(HEAD_GEO, skin, 0, headY, 0, R, R * 1.03, R);
+  add(HEAD_GEO, hair, 0, headY + R * 0.28, -R * 0.08, R * 1.06, R * 0.78, R * 1.06);
+  if (o.hairStyle === 'long') add(UNIT_BOX, hair, 0, headY - R * 0.45, -R * 0.62, R * 1.9, R * 2.1, R * 0.5);
+  if (o.hairStyle === 'bun') add(HEAD_GEO, hair, 0, headY + R * 0.2, -R * 1.05, R * 0.45, R * 0.45, R * 0.45);
+  if (o.cap) { add(UNIT_CYL, mat(o.cap), 0, headY + R * 0.75, 0, R * 1.05, R * 0.35, R * 1.05); add(UNIT_BOX, mat(o.cap), 0, headY + R * 0.6, R * 0.95, R * 1.4, 0.02, R * 0.7); }
+  // Friendly face (static — no expression is implied)
+  const dark = mat('#222831');
+  add(HEAD_GEO, dark, -R * 0.36, headY + R * 0.1, R * 0.9, 0.019, 0.022, 0.012, false);
+  add(HEAD_GEO, dark, R * 0.36, headY + R * 0.1, R * 0.9, 0.019, 0.022, 0.012, false);
+  const smile = add(geo('smile', () => new THREE.TorusGeometry(1, 0.25, 5, 10, Math.PI)), mat('#8A3B3B'), 0, headY - R * 0.3, R * 0.94, R * 0.28, R * 0.28, R * 0.28, false);
+  smile.rotation.z = Math.PI;
+  add(HEAD_GEO, mat('#F2A69B'), -R * 0.58, headY - R * 0.15, R * 0.78, 0.028, 0.02, 0.01, false);
+  add(HEAD_GEO, mat('#F2A69B'), R * 0.58, headY - R * 0.15, R * 0.78, 0.028, 0.02, 0.01, false);
+  g.userData.headY = headY; g.userData.height = headY + R; g.userData.headR = R;
+  return g;
+}
+
+/* Interactive characters + their predefined conversation lines */
+const CHARACTER_DEFS = [
+  { id: 'teacher', name: 'Teacher', where: 'in the classroom (Class 1)', pos: [1.6, -12.5], face: 0,
+    look: { kind: 'adult', skin: '#C68B59', top: '#E07A5F', dress: '#3E8E7E', drape: '#E07A5F', hair: '#2B1B12', hairStyle: 'bun' },
+    voice: { pitch: 1.1, rate: 0.9 },
+    lines: ['Take out your notebook and open it to page ten.',
+            'Please sit down and take out your crayons.',
+            'Well done! You can take a break in the Pause Point corner.'] },
+  { id: 'parent', name: 'Parent', where: 'near the school gate', pos: [-3.8, 20.3], face: Math.PI,
+    look: { kind: 'adult', skin: '#A86B43', top: '#5B7DB1', bottom: '#3B3F4A', hair: '#1E1410' },
+    voice: { pitch: 0.9, rate: 0.9 },
+    lines: ['Please pick up your bag. We are going home.',
+            'Please put your shoes on. We are going to the park.',
+            "Hey, could you please pick up your school bag? We're leaving in five minutes."] },
+  { id: 'arjun', name: 'Arjun (friend)', where: 'by the football goal', pos: [8.2, 8.4], face: -Math.PI / 2,
+    look: { kind: 'child', skin: '#B97A4F', top: '#F2C14E', bottom: '#2E5E8C', hair: '#1E1410' },
+    voice: { pitch: 1.35, rate: 0.95 },
+    lines: ['Do you want to play football with us?',
+            'Would you like to come outside and play with us?',
+            "It's your turn to kick the ball!"] },
+  { id: 'guard', name: 'Security guard', where: 'at the school gate', pos: [3.9, 20.7], face: Math.PI,
+    look: { kind: 'adult', skin: '#9C6644', top: '#6B7FA3', bottom: '#39404F', hair: '#1E1410', cap: '#3E4C66' },
+    voice: { pitch: 0.85, rate: 0.9 },
+    lines: ['Stop! There is a bicycle coming.',
+            "Don't run near the gate, walk slowly please."] },
+  { id: 'meera', name: 'Meera (classmate)', where: 'in the corridor', pos: [-4.8, -2.8], face: 0.6,
+    look: { kind: 'child', skin: '#C68B59', top: '#F08FB0', dress: '#F08FB0', hair: '#2B1B12', hairStyle: 'long' },
+    voice: { pitch: 1.4, rate: 0.95 },
+    lines: ['Good morning! How are you feeling today?',
+            "I'm so happy today! It's my birthday.",
+            'Can you share your crayons with me?'] },
+  { id: 'helper', name: 'Helper didi', where: 'in the corridor, near the library', pos: [7.3, -3.0], face: -0.6,
+    look: { kind: 'adult', skin: '#B5794D', top: '#8E7CC3', dress: '#8E7CC3', drape: '#F2C14E', hair: '#1E1410', hairStyle: 'bun' },
+    voice: { pitch: 1.0, rate: 0.9 },
+    lines: ['Be careful, the floor is wet. Walk slowly.',
+            'Please wash your hands before lunch.'] },
+  // Background children (not interactive)
+  { id: 'kid1', interactive: false, pos: [-7.9, 8.9], face: 2.5, look: { kind: 'child', skin: '#A86B43', top: '#6BBF7A', bottom: '#3B3F4A', hair: '#1E1410' } },
+  { id: 'kid2', interactive: false, pos: [10.4, 9.3], face: -1.6, look: { kind: 'child', skin: '#C68B59', top: '#7FB8F0', dress: '#7FB8F0', hair: '#2B1B12', hairStyle: 'long' } }
+];
+
+/* Predefined scenarios (selectable from the Conversations panel) */
+const SCENARIOS = [
+  { n: '1', title: 'Parent / Guardian', char: 'parent', line: 0 },
+  { n: '2', title: 'Teacher', char: 'teacher', line: 0 },
+  { n: '3', title: 'Friend', char: 'arjun', line: 0 },
+  { n: '4', title: 'Safety', char: 'guard', line: 0 },
+  { n: '5', title: 'General conversation', char: 'meera', line: 0 },
+  { n: '+', title: 'Corridor safety', char: 'helper', line: 0 },
+  { n: '+', title: 'Praise + Pause Point', char: 'teacher', line: 2 },
+  { n: '+', title: 'Leaving soon (polite request)', char: 'parent', line: 2 },
+  { n: '+', title: "Negation (don't run)", char: 'guard', line: 1 }
+];
+
+const characters = [];
+function buildCharacters() {
+  CHARACTER_DEFS.forEach(def => {
+    const person = createPerson(def.look);
+    person.position.set(def.pos[0], 0, def.pos[1]);
+    person.rotation.y = def.face || 0;
+    scene.add(person);
+    const h = person.userData.height;
+    const ch = { id: def.id, name: def.name || '', where: def.where || '', lines: def.lines || [], voice: def.voice || {},
+      interactive: def.interactive !== false, group: person, baseYaw: person.rotation.y, radius: 0.32, nextLine: 0, speaking: false };
+    if (ch.interactive) {
+      ch.nameTag = makeLabelSprite(def.name, { height: 0.15 }); ch.nameTag.position.set(0, h + 0.28, 0); person.add(ch.nameTag);
+      ch.talkDesk = makeLabelSprite('Press E to talk', { height: 0.13, bg: 'rgba(30,95,168,0.96)', fg: '#fff' });
+      ch.talkVR = makeLabelSprite('Pull trigger to talk', { height: 0.13, bg: 'rgba(30,95,168,0.96)', fg: '#fff' });
+      [ch.talkDesk, ch.talkVR].forEach(s => { s.position.set(0, h + 0.5, 0); s.visible = false; person.add(s); });
+      ch.bubble = makeIconSprite('speech', '#2E7BD1', 0.26);
+      ch.bubble.position.set(0.3, h + 0.02, 0); ch.bubble.visible = false; person.add(ch.bubble);
+    }
+    characters.push(ch);
+  });
+}
+const lerpAngle = (a, b, t) => { let d = (b - a) % (Math.PI * 2); if (d > Math.PI) d -= Math.PI * 2; if (d < -Math.PI) d += Math.PI * 2; return a + d * t; };
+
+function updateCharacters(dt, t, pp) {
+  let nearest = null, nd = Infinity;
+  const turnRate = settings.animation === 'low' ? 2.0 : 3.5;
+  for (const ch of characters) {
+    const p = ch.group.position, dx = pp.x - p.x, dz = pp.z - p.z, d = Math.hypot(dx, dz);
+    if (!ch.interactive) continue;
+    if (d < INTERACT_DIST && d < nd) { nearest = ch; nd = d; }
+    const target = d < 4 ? Math.atan2(dx, dz) : ch.baseYaw;   // gently turn towards the child
+    ch.group.rotation.y = lerpAngle(ch.group.rotation.y, target, 1 - Math.exp(-dt * turnRate));
+    ch.nameTag.visible = d < 8;
+    ch.bubble.visible = ch.speaking;
+    ch.bubble.material.opacity = (ch.speaking && settings.animation === 'medium') ? 0.8 + 0.2 * Math.sin(t * 2.4) : 1;
+  }
+  for (const ch of characters) {
+    if (!ch.interactive) continue;
+    const show = ch === nearest && !ch.speaking && !app.paused;
+    ch.talkDesk.visible = show && !app.xr; ch.talkVR.visible = show && app.xr;
+  }
+  app.nearest = nearest;
+  const prompt = document.getElementById('prompt');
+  if (nearest && !app.xr && !nearest.speaking && app.started && !app.paused) {
+    prompt.textContent = 'Press E to talk to ' + nearest.name; prompt.style.display = 'block';
+  } else prompt.style.display = 'none';
+}
+
+/* Guide marker ("Find" in the Conversations panel) and object cue marker */
+const guideRing = new THREE.Mesh(new THREE.RingGeometry(0.5, 0.64, 36), new THREE.MeshBasicMaterial({ color: '#7FB8F0', transparent: true, opacity: 0.8, fog: false, side: THREE.DoubleSide }));
+guideRing.rotation.x = -Math.PI / 2; guideRing.visible = false; scene.add(guideRing);
+const guideArrow = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.3, 12), new THREE.MeshBasicMaterial({ color: '#4F8EDC', fog: false }));
+guideArrow.rotation.x = Math.PI; guideArrow.visible = false; scene.add(guideArrow);
+const cueRing = new THREE.Mesh(new THREE.RingGeometry(0.42, 0.54, 36), new THREE.MeshBasicMaterial({ color: '#FFD27A', transparent: true, opacity: 0.85, fog: false, side: THREE.DoubleSide }));
+cueRing.rotation.x = -Math.PI / 2; cueRing.visible = false; scene.add(cueRing);
+const cueArrow = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.22, 12), new THREE.MeshBasicMaterial({ color: '#E8A93A', fog: false }));
+cueArrow.rotation.x = Math.PI; cueArrow.visible = false; scene.add(cueArrow);
+let cueBaseY = 0;
+
+function setGuide(ch) {
+  app.guide = ch;
+  const hint = document.getElementById('guideHint');
+  if (!ch) { guideRing.visible = guideArrow.visible = false; hint.style.display = 'none'; return; }
+  const p = ch.group.position;
+  guideRing.position.set(p.x, 0.06, p.z); guideRing.visible = true;
+  guideArrow.position.set(p.x, ch.group.userData.height + 0.95, p.z); guideArrow.visible = true;
+  hint.textContent = 'Find: ' + ch.name + ' — ' + ch.where; hint.style.display = 'block';
+}
+/** In-world cue: softly marks the nearest scene object matching a displayed keyword. */
+function showObjectCue(keywords) {
+  hideObjectCue();
+  const pp = getPlayerPosition();
+  const wp = new THREE.Vector3();
+  for (const k of keywords || []) {
+    const label = String(k.label).replace(/^DON'T /, '');
+    let best = null, bd = 16;
+    for (const io of interactiveObjects) {
+      if (!io.keys.includes(label)) continue;
+      io.obj.getWorldPosition(wp);
+      const d = Math.hypot(wp.x - pp.x, wp.z - pp.z);
+      if (d < bd) { bd = d; best = wp.clone(); }
+    }
+    if (best) {
+      cueRing.position.set(best.x, 0.07, best.z); cueRing.visible = true;
+      cueBaseY = Math.max(best.y, 0.2) + 0.55; cueArrow.position.set(best.x, cueBaseY, best.z); cueArrow.visible = true;
+      return;
+    }
+  }
+}
+function hideObjectCue() { cueRing.visible = cueArrow.visible = false; }
+
+/* =====================================================================
+   6. PLAYER MOVEMENT (desktop) & VR CONTROLS
+   ===================================================================== */
+const avatar = createPerson({ kind: 'child', skin: '#B97A4F', top: '#7FB8F0', bottom: '#3B4A6B', hair: '#1E1410' });
+{ // the facial wearable: a slim visor band with a small microphone dot
+  const R = avatar.userData.headR, y = avatar.userData.headY;
+  const visor = new THREE.Mesh(UNIT_BOX, mat('#24324A')); visor.scale.set(R * 2.2, 0.05, 0.05); visor.position.set(0, y + 0.02, R * 0.92); avatar.add(visor);
+  const lens = new THREE.Mesh(UNIT_BOX, new THREE.MeshLambertMaterial({ color: '#9fd3ff', emissive: '#4f9be0', emissiveIntensity: 0.5, transparent: true, opacity: 0.8 }));
+  lens.scale.set(R * 1.7, 0.035, 0.012); lens.position.set(0, y + 0.02, R * 0.95 + 0.026); avatar.add(lens);
+  const mic = new THREE.Mesh(HEAD_GEO, new THREE.MeshLambertMaterial({ color: '#ffffff', emissive: '#8fe0b0', emissiveIntensity: 0.6 }));
+  mic.scale.setScalar(0.018); mic.position.set(R * 1.1, y + 0.02, R * 0.6); avatar.add(mic);
+}
+avatar.rotation.y = Math.PI; avatar.visible = false; rig.add(avatar);
+
+const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
+function getPlayerPosition() {
+  if (app.xr) { camera.getWorldPosition(_v3); return _v3; }
+  return rig.position;
+}
+
+function updateDesktopMovement(dt) {
+  const k = app.keys;
+  let f = ((k.KeyW || k.ArrowUp) ? 1 : 0) - ((k.KeyS || k.ArrowDown) ? 1 : 0);
+  let s = ((k.KeyD || k.ArrowRight) ? 1 : 0) - ((k.KeyA || k.ArrowLeft) ? 1 : 0);
+  if ((f || s) && !app.paused && app.started) {
+    const len = Math.hypot(f, s); f /= len; s /= len;
+    const sp = (k.ShiftLeft || k.ShiftRight) ? RUN_SPEED : WALK_SPEED;
+    const y = app.yaw;
+    const dx = (-Math.sin(y) * f + Math.cos(y) * s) * sp * dt;
+    const dz = (-Math.cos(y) * f - Math.sin(y) * s) * sp * dt;
+    const r = resolveMove(rig.position.x, rig.position.z, dx, dz);
+    rig.position.x += r[0]; rig.position.z += r[1];
+  }
+  rig.rotation.y = app.yaw;
+  pivot.rotation.x = app.pitch;
+  pivot.position.y = settings.eyeHeight;
+  if (app.thirdPerson) camera.position.set(0, 0.3, app.tpDist); else camera.position.set(0, 0, 0);
+  avatar.visible = app.thirdPerson;
+}
+
+/* --- VR: left stick smooth move (head-relative), right stick 30° snap turn --- */
+const xrPrevButtons = {};
+function updateXRInput(dt) {
+  const session = renderer.xr.getSession();
+  if (!session) return;
+  for (const src of session.inputSources) {
+    const gp = src.gamepad; if (!gp) continue;
+    const hand = src.handedness;
+    const ax = gp.axes.length >= 4 ? [gp.axes[2], gp.axes[3]] : [gp.axes[0] || 0, gp.axes[1] || 0];
+    if (!app.paused) {
+      if (hand === 'left') vrMove(ax[0], ax[1], dt);
+      if (hand === 'right') vrSnap(ax[0]);
+    }
+    gp.buttons.forEach((b, i) => {
+      const key = hand + i, was = xrPrevButtons[key];
+      xrPrevButtons[key] = b.pressed;
+      if (b.pressed && !was) onXRButton(hand, i);
+    });
+  }
+}
+function vrMove(x, y, dt) {
+  const mag = Math.hypot(x, y);
+  if (mag < 0.15) return;
+  camera.getWorldDirection(_v1); _v1.y = 0; if (_v1.lengthSq() < 1e-4) return; _v1.normalize();
+  _v2.set(-_v1.z, 0, _v1.x); // right vector
+  const sp = VR_SPEED * Math.min(1, (mag - 0.15) / 0.85) * dt / mag;
+  const mx = (_v1.x * -y + _v2.x * x) * sp, mz = (_v1.z * -y + _v2.z * x) * sp;
+  camera.getWorldPosition(_v3);
+  const r = resolveMove(_v3.x, _v3.z, mx, mz);
+  rig.position.x += r[0]; rig.position.z += r[1];
+}
+function vrSnap(x) {
+  if (Math.abs(x) > 0.65 && app.snapReady) { snapTurn(-Math.sign(x) * Math.PI / 6); app.snapReady = false; }
+  if (Math.abs(x) < 0.3) app.snapReady = true;
+}
+/** Rotate the rig around the HEAD position so the view does not swing sideways. */
+function snapTurn(angle) {
+  camera.getWorldPosition(_v1);
+  rig.rotation.y += angle;
+  rig.updateMatrixWorld(true);
+  camera.getWorldPosition(_v2);
+  rig.position.x += _v1.x - _v2.x; rig.position.z += _v1.z - _v2.z;
+}
+function onXRButton(hand, i) {
+  if (i === 0) { if (!app.paused) talkToNearest(); }              // trigger (either hand)
+  else if (hand === 'right' && i === 4) repeatKeywords();          // A
+  else if (hand === 'right' && i === 5) clearKeywords();           // B
+  else if (hand === 'left' && i === 4) togglePause();              // X
+  else if (hand === 'left' && i === 5) toggleMic();                // Y
+}
+// Simple controller shapes (no external models are downloaded)
+[0, 1].forEach(i => {
+  const grip = renderer.xr.getControllerGrip(i);
+  const m = new THREE.Mesh(new THREE.CapsuleGeometry(0.025, 0.09, 4, 8), mat('#3B4A6B'));
+  m.rotation.x = -Math.PI / 2.4; grip.add(m); rig.add(grip);
+});
+
+/* =====================================================================
+   7. KEYWORD DISPLAY INTERFACE — ONE canvas used by both the desktop HUD
+      and the VR head-following panel (one consistent wearable display).
+   ===================================================================== */
+const wearableCanvas = document.getElementById('wearableCanvas');
+const wctx = wearableCanvas.getContext('2d');
+const wearableWrap = document.getElementById('wearableWrap');
+const vrTexture = new THREE.CanvasTexture(wearableCanvas);
+vrTexture.colorSpace = THREE.SRGBColorSpace;
+const vrPanel = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({
+  map: vrTexture, transparent: true, opacity: 0, depthTest: false, depthWrite: false, fog: false, toneMapped: false }));
+vrPanel.renderOrder = 999; vrPanel.visible = false; scene.add(vrPanel);
+const W = { visible: false, hideAt: 0, view: null, lastResult: null, mode: 'idle' };
+
+function fitFont(c, text, weight, max, min, maxW) {
+  let s = max;
+  for (; s > min; s -= 2) { c.font = weight + ' ' + s + 'px ' + FONT; if (c.measureText(text).width <= maxW) break; }
+  c.font = weight + ' ' + s + 'px ' + FONT;
+  return s;
+}
+/** renderWearable(view): draws header + up to 5 keyword rows (icon tile, big label, category tag). */
+function renderWearable(view) {
+  const Wd = 1024, pad = 26, headerH = 84, rowH = 116, gap = 12;
+  const rows = view.rows || [];
+  const H = Math.round(pad * 2 + headerH + rows.length * rowH + Math.max(0, rows.length - 1) * gap - (rows.length ? 0 : 10));
+  let resized = false;
+  if (wearableCanvas.height !== H) { wearableCanvas.height = H; resized = true; }
+  const c = wctx;
+  c.clearRect(0, 0, Wd, H);
+  const hc = settings.contrast === 'high';
+  const safety = view.headerCat === 'WARNING';
+  rr(c, 4, 4, Wd - 8, H - 8, 40);
+  c.fillStyle = hc ? '#000000' : 'rgba(17,25,40,0.9)'; c.fill();
+  c.lineWidth = safety ? 10 : (hc ? 6 : 3);
+  c.strokeStyle = safety ? '#F4BE55' : (hc ? '#FFFFFF' : 'rgba(255,255,255,0.28)'); c.stroke();
+  // header
+  const hcat = CAT[view.headerCat] || CAT.INFO, hy = pad + headerH / 2 - 6;
+  c.fillStyle = hcat.color; c.beginPath(); c.arc(pad + 32, hy, 30, 0, Math.PI * 2); c.fill();
+  if (hc) { c.lineWidth = 3; c.strokeStyle = '#fff'; c.stroke(); }
+  drawIcon(c, view.headerIcon || 'speech', pad + 32, hy, 40, '#fff', hcat.color);
+  c.textBaseline = 'middle';
+  c.font = '600 26px ' + FONT; c.textAlign = 'right';
+  const meta = view.meta || ''; const metaW = c.measureText(meta).width;
+  c.fillStyle = hc ? '#fff' : 'rgba(255,255,255,0.72)'; c.fillText(meta, Wd - pad - 8, hy);
+  c.textAlign = 'left'; fitFont(c, view.header, 700, 40, 24, Wd - pad * 2 - 90 - metaW - 24);
+  c.fillStyle = '#fff'; c.fillText(view.header, pad + 78, hy);
+  if (rows.length) { c.fillStyle = hc ? '#fff' : 'rgba(255,255,255,0.18)'; c.fillRect(pad, pad + headerH - 10, Wd - pad * 2, hc ? 3 : 2); }
+  // rows
+  rows.forEach((r, i) => {
+    const y = pad + headerH + i * (rowH + gap), cat = CAT[r.cat] || CAT.INFO, tile = rowH - 12;
+    rr(c, pad, y + 2, tile, tile, 24); c.fillStyle = cat.color; c.fill();
+    if (hc) { c.lineWidth = 4; c.strokeStyle = '#fff'; c.stroke(); }
+    drawIcon(c, r.icon, pad + tile / 2, y + 2 + tile / 2, tile * 0.7, '#fff', cat.color, r.negated);
+    c.font = '700 24px ' + FONT;
+    const tag = cat.tag, tw = c.measureText(tag).width + 30, tx = Wd - pad - tw, ty = y + rowH / 2 - 22;
+    rr(c, tx, ty, tw, 44, 22); c.lineWidth = 3; c.strokeStyle = hc ? '#fff' : cat.color; c.stroke();
+    c.fillStyle = hc ? '#fff' : cat.light; c.textAlign = 'center'; c.fillText(tag, tx + tw / 2, ty + 23);
+    c.textAlign = 'left';
+    const lx = pad + tile + 26;
+    fitFont(c, r.label, 800, 68, 30, tx - lx - 18);
+    c.fillStyle = '#fff'; c.fillText(r.label, lx, y + rowH / 2 + 2);
+  });
+  if (resized) vrTexture.dispose();
+  vrTexture.needsUpdate = true;
+  updateVRPanelScale();
+}
+function updateVRPanelScale() {
+  const w = 0.58 * settings.textScale;
+  vrPanel.scale.set(w, w * wearableCanvas.height / wearableCanvas.width, 1);
+}
+function sourceLabel(meta) { return ({ live: 'LIVE MIC', demo: 'DEMO', typed: 'DEMO INPUT' })[meta && meta.source] || 'DEMO'; }
+
+function showWearable(view, seconds, mode) {
+  W.view = view; W.mode = mode || 'keywords';
+  renderWearable(view);
+  W.visible = true;
+  W.hideAt = seconds === Infinity ? Infinity : performance.now() + seconds * 1000;
+  wearableWrap.classList.add('show');
+  if (app.xr && vrPanel.material.opacity < 0.05) followHead(0, true);
+}
+function hideWearable() { W.visible = false; W.mode = 'idle'; wearableWrap.classList.remove('show'); }
+
+/** displayKeywords(result): show an analysed result in the wearable view. */
+function displayKeywords(result) {
+  if (!result) return;
+  W.lastResult = result;
+  const meta = result.meta || {};
+  const metaText = (meta.speaker ? meta.speaker + ' · ' : '') + sourceLabel(meta);
+  const view = result.notClear
+    ? { header: 'Not clear', headerIcon: 'question', headerCat: 'INFO', meta: metaText, rows: [{ label: 'NOT CLEAR', cat: 'INFO', icon: 'question' }] }
+    : { header: result.interpretation.header, headerIcon: result.interpretation.icon, headerCat: result.interpretation.cat, meta: metaText,
+        rows: result.keywords.map(k => ({ label: k.label, cat: k.cat, icon: k.icon, negated: k.negated })) };
+  let secs = settings.duration > 0 ? settings.duration : Infinity;
+  if (meta.source === 'live' && result.interpretation && result.interpretation.type === 'INFO' && secs !== Infinity) secs = Math.max(3, secs * 0.6);
+  showWearable(view, secs, 'keywords');
+  showObjectCue(result.keywords);
+}
+/** clearKeywords(): dismiss the wearable display (and any in-world cue). */
+function clearKeywords() { hideWearable(); hideObjectCue(); }
+function showListening(speaker, source) {
+  if (W.visible && W.mode === 'keywords' && W.hideAt !== Infinity && W.hideAt - performance.now() > 2500) return; // don't interrupt fresh keywords
+  if (W.visible && W.mode === 'listening') { W.hideAt = performance.now() + 6000; return; }
+  showWearable({ header: 'Listening…', headerIcon: 'listen', headerCat: 'INFO', meta: (speaker ? speaker + ' · ' : '') + sourceLabel({ source }), rows: [] }, 6, 'listening');
+}
+function repeatKeywords() {
+  const r = W.lastResult; if (!r || app.paused) return;
+  displayKeywords(r);
+  if (r.meta && r.meta.source === 'demo' && settings.audio) {
+    const ch = characters.find(c => c.id === r.meta.characterId);
+    SpeechInput.suppress(estimateMs(r.input) + 3000);
+    speakLine(r.input, ch ? ch.voice : {}, () => {});
+  }
+}
+const _hp = new THREE.Vector3(), _fw = new THREE.Vector3(), _tp = new THREE.Vector3();
+/** VR: lazily follow the head (comfortable), slightly below eye line. */
+function followHead(dt, snap) {
+  camera.getWorldPosition(_hp); camera.getWorldDirection(_fw);
+  _fw.y = 0; if (_fw.lengthSq() < 1e-4) _fw.set(0, 0, -1); _fw.normalize();
+  _tp.copy(_hp).addScaledVector(_fw, 1.15); _tp.y = _hp.y - 0.3;
+  if (snap) vrPanel.position.copy(_tp);
+  else vrPanel.position.lerp(_tp, 1 - Math.exp(-dt * (settings.animation === 'low' ? 1.8 : 3)));
+  vrPanel.lookAt(_hp);
+}
+function updateWearable(dt, now) {
+  if (app.paused && W.mode !== 'paused' && W.hideAt !== Infinity) W.hideAt += dt * 1000;
+  if (W.visible && now > W.hideAt) { hideWearable(); hideObjectCue(); }
+  const target = W.visible ? 1 : 0, speed = settings.animation === 'low' ? 3 : 5;
+  vrPanel.material.opacity += (target - vrPanel.material.opacity) * (1 - Math.exp(-dt * speed));
+  vrPanel.visible = app.xr && vrPanel.material.opacity > 0.01;
+  if (app.xr) followHead(dt, false);
+}
+
+/* --- Presenter view: pipeline strip + stage-by-stage panel --- */
+const stripEls = [...document.querySelectorAll('#strip span')];
+let stripTimers = [];
+function setStage(n) { stripEls.forEach((el, i) => el.classList.toggle('on', i <= n)); }
+function animateStrip() {
+  stripTimers.forEach(clearTimeout); stripTimers = [];
+  for (let i = 1; i <= 5; i++) stripTimers.push(setTimeout(() => setStage(i), i * 110));
+  stripTimers.push(setTimeout(() => setStage(-1), 4000));
+}
+function el(tag, text, cls, style) { const e = document.createElement(tag); if (text !== undefined) e.textContent = text; if (cls) e.className = cls; if (style) e.style.cssText = style; return e; }
+function updatePresenter(r) {
+  document.getElementById('ppEmpty').style.display = 'none';
+  document.getElementById('ppBody').style.display = 'block';
+  const heard = document.getElementById('ppHeard'); heard.innerHTML = '';
+  heard.append(el('div', r.input ? '“' + r.input + '”' : '(nothing recognised)', '', 'font-weight:600'));
+  const m = r.meta || {};
+  heard.append(el('div', 'Source: ' + sourceLabel(m) + (m.speaker ? ' · ' + m.speaker : '') + (typeof m.confidence === 'number' && m.confidence > 0 ? ' · confidence ' + m.confidence.toFixed(2) : ''), '', 'color:#59647a;font-size:12.5px'));
+  const sent = document.getElementById('ppSent'); sent.innerHTML = '';
+  (r.segments || []).forEach(s => sent.append(el('li', s.original + '  → ' + s.type.toLowerCase().replace('_', ' '))));
+  const simp = document.getElementById('ppSimple'); simp.innerHTML = '';
+  (r.segments || []).forEach(s => {
+    const d = el('div'); (s.removed || []).filter(Boolean).forEach(w => d.append(el('span', w, 'struck')));
+    d.append(el('span', s.simplified)); simp.append(d);
+  });
+  if (!r.segments || !r.segments.length) simp.textContent = '—';
+  const kw = document.getElementById('ppKw'); kw.innerHTML = '';
+  (r.keywords || []).forEach(k => { const c = CAT[k.cat] || CAT.INFO; kw.append(el('span', k.label + ' · ' + c.tag, 'kchip', 'background:' + c.color)); });
+  if (r.hidden && r.hidden.length) kw.append(el('div', 'Lower priority, not shown: ' + r.hidden.join(', '), '', 'color:#59647a;font-size:12.5px;margin-top:4px'));
+  const ty = document.getElementById('ppType'); ty.innerHTML = '';
+  ty.append(el('div', r.interpretation ? r.interpretation.header : '', '', 'font-weight:700'));
+  ty.append(el('div', r.interpretation ? r.interpretation.reason : '', '', 'color:#59647a;font-size:12.5px'));
+  const an = Core.getAnalyzer();
+  document.getElementById('ppAnalyzer').textContent = an.label + (r.analyzerNote ? ' — ' + r.analyzerNote : '') + ' · ' + (r.ms || 0) + ' ms';
+}
+
+/* =====================================================================
+   8. CHARACTER INTERACTION & PREDEFINED CONVERSATIONS
+   ===================================================================== */
+let voices = [];
+function loadVoices() { try { voices = window.speechSynthesis ? speechSynthesis.getVoices() : []; } catch (e) { voices = []; } }
+if (window.speechSynthesis) { loadVoices(); speechSynthesis.onvoiceschanged = loadVoices; }
+function pickVoice() {
+  const want = settings.lang || 'en-IN';
+  return voices.find(v => v.lang === want) || voices.find(v => v.lang && v.lang.replace('_', '-').startsWith('en-IN'))
+    || voices.find(v => v.lang && v.lang.startsWith('en')) || null;
+}
+const estimateMs = text => Math.min(9000, 700 + String(text).split(/\s+/).length * 380);
+/** Optional, gentle text-to-speech (volume capped, can be switched off). */
+function speakLine(text, voice, onDone) {
+  let done = false;
+  const finish = () => { if (done) return; done = true; clearTimeout(timer); onDone(); };
+  const timer = setTimeout(finish, estimateMs(text) + (settings.audio ? 2500 : 0));
+  if (!settings.audio || !window.speechSynthesis || !window.SpeechSynthesisUtterance) return;
+  try {
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = settings.lang || 'en-IN'; u.rate = voice.rate || 0.92; u.pitch = voice.pitch || 1; u.volume = 0.75;
+    const v = pickVoice(); if (v) u.voice = v;
+    u.onend = finish; u.onerror = finish;
+    speechSynthesis.cancel(); speechSynthesis.speak(u);
+  } catch (e) { /* timer still finishes */ }
+}
+/**
+ * startConversation(character, lineIndex?) — the character speaks a predefined
+ * line; the line then goes through the SAME processSpeech() pipeline as live speech.
+ */
+function startConversation(ch, lineIndex) {
+  if (!ch || !ch.interactive || app.paused || ch.speaking) return;
+  const idx = (lineIndex !== undefined ? lineIndex : ch.nextLine) % ch.lines.length;
+  ch.nextLine = idx + 1;
+  const text = ch.lines[idx];
+  ch.speaking = true;
+  if (app.guide === ch) setGuide(null);
+  showListening(ch.name, 'demo'); setStage(0);
+  SpeechInput.suppress(estimateMs(text) + 3000); // keep the mic from re-hearing the simulated voice
+  speakLine(text, ch.voice, () => {
+    ch.speaking = false;
+    Core.processSpeech(text, { source: 'demo', speaker: ch.name, characterId: ch.id });
+  });
+}
+function talkToNearest() { if (app.nearest) startConversation(app.nearest); }
+
+/* =====================================================================
+   9. MICROPHONE & RECOGNITION — UI glue (logic lives in WearableCore)
+   ===================================================================== */
+const modeBadge = document.getElementById('modeBadge'), micBadge = document.getElementById('micBadge');
+const micText = document.getElementById('micText'), btnMic = document.getElementById('btnMic');
+const meterBars = [...document.querySelectorAll('.meter i')];
+function updateStatusUI() {
+  const st = SpeechInput.state;
+  let txt, cls;
+  if (!SpeechInput.supported) { txt = '<b>DEMO MODE</b> · Live speech recognition is not supported in this browser. Talk to the people or use Conversations → Demo input.'; cls = 'demo'; }
+  else if (st.recognitionFailed) { txt = '<b>DEMO MODE</b> · ' + escapeHtml(st.detail) + ' Use the people or Conversations → Demo input.'; cls = 'demo'; }
+  else if (!settings.recognition) { txt = '<b>Speech recognition OFF</b> (Settings). Demo conversations still work.'; cls = ''; }
+  else if (st.micActive && st.recognitionRunning) { txt = '<b>LIVE</b> · Recognising speech from your microphone.'; cls = 'live'; }
+  else if (st.micActive) { txt = escapeHtml(st.detail || 'Microphone on.'); cls = 'live'; }
+  else { txt = '<b>Live recognition available</b> · Turn the mic on to try real speech.'; cls = ''; }
+  modeBadge.innerHTML = txt; modeBadge.className = 'pill ' + cls;
+  micBadge.classList.toggle('on', st.micActive);
+  micText.textContent = st.micActive ? 'MIC ON · audio is being captured' : (st.status === 'requesting' ? 'Asking for permission…' : 'Mic off');
+  btnMic.setAttribute('aria-pressed', String(st.micActive));
+  btnMic.querySelector('span').textContent = st.micActive ? 'Mic on' : 'Mic off';
+}
+function escapeHtml(s) { return String(s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]); }
+SpeechInput.onStatus(st => {
+  updateStatusUI();
+  if (st.status === 'denied' || st.status === 'error' || st.status.startsWith('rec-')) toast(st.detail);
+});
+SpeechInput.onInterim(() => { if (!app.paused) { showListening('Nearby voice', 'live'); setStage(1); } });
+async function toggleMic() {
+  if (SpeechInput.state.micActive) { Core.stopMicrophone(); return; }
+  if (SpeechInput.state.recognitionFailed) SpeechInput.state.recognitionFailed = false;
+  await Core.startMicrophone({ recognition: settings.recognition, lang: settings.lang });
+  updateStatusUI();
+}
+function updateMicMeter() {
+  const on = SpeechInput.state.micActive, lvl = on ? SpeechInput.getLevel() : 0;
+  meterBars.forEach((b, i) => { const lit = lvl > (i + 0.5) / 6; b.style.height = (4 + (lit ? (i + 1) * 2 : 0)) + 'px'; b.style.background = lit ? '#8fe0b0' : '#5b6577'; });
+}
+
+/* =====================================================================
+   10. SENSORY SETTINGS
+   ===================================================================== */
+function applySettings() {
+  document.documentElement.style.setProperty('--ui-scale', settings.textScale);
+  document.body.classList.toggle('hc', settings.contrast === 'high');
+  document.body.classList.toggle('anim-low', settings.animation === 'low');
+  document.body.classList.toggle('anim-medium', settings.animation === 'medium');
+  document.documentElement.style.setProperty('--fade', settings.animation === 'low' ? '.45s' : '.7s');
+  document.getElementById('strip').style.display = settings.presenter ? 'flex' : 'none';
+  Core.CONFIG.maxKeywords = Number(settings.maxKeywords) || 4;
+  if (W.view) renderWearable(W.view);
+  updateVRPanelScale();
+  // reflect state in the panel controls
+  document.querySelectorAll('#panelSettings [data-set]').forEach(ctrl => {
+    const key = ctrl.dataset.set, v = settings[key];
+    if (ctrl.classList.contains('toggle')) { ctrl.setAttribute('aria-pressed', String(!!v)); ctrl.textContent = v ? 'On' : 'Off'; }
+    else if (ctrl.classList.contains('seg')) ctrl.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(String(v) === b.dataset.v)));
+    else if (ctrl.tagName === 'INPUT' || ctrl.tagName === 'SELECT') ctrl.value = v;
+  });
+  updateStatusUI();
+}
+function setSetting(key, value) {
+  const prev = settings[key];
+  settings[key] = value; saveSettings();
+  if (key === 'recognition' && prev !== value && SpeechInput.state.micActive) {
+    if (value) SpeechInput.retry(); else { SpeechInput.stopRecognition(); }
+  }
+  if (key === 'lang') SpeechInput.setLang(value);
+  if (key === 'audio' && !value && window.speechSynthesis) speechSynthesis.cancel();
+  applySettings();
+}
+document.querySelectorAll('#panelSettings [data-set]').forEach(ctrl => {
+  const key = ctrl.dataset.set;
+  if (ctrl.classList.contains('toggle')) ctrl.addEventListener('click', () => setSetting(key, !settings[key]));
+  else if (ctrl.classList.contains('seg')) ctrl.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+    const v = b.dataset.v; setSetting(key, isNaN(Number(v)) ? v : Number(v));
+  }));
+  else ctrl.addEventListener('change', () => setSetting(key, ctrl.type === 'range' ? Number(ctrl.value) : ctrl.value));
+});
+
+/* =====================================================================
+   11. EVENT HANDLING & APPLICATION INITIALISATION
+   ===================================================================== */
+function toast(msg) {
+  if (!msg) return;
+  const t = document.getElementById('toast'); t.textContent = msg; t.style.display = 'block';
+  clearTimeout(toast._t); toast._t = setTimeout(() => { t.style.display = 'none'; }, 4500);
+}
+function setPaused(p) {
+  if (app.paused === p) return;
+  app.paused = p;
+  document.getElementById('btnPause').querySelector('span').textContent = p ? 'Resume' : 'Pause';
+  document.getElementById('btnPause').setAttribute('aria-pressed', String(p));
+  document.getElementById('pausedOverlay').style.display = (p && !app.xr) ? 'flex' : 'none';
+  if (p) {
+    if (window.speechSynthesis) speechSynthesis.cancel();
+    if (SpeechInput.state.micActive) { app.resumeMicAfterPause = true; Core.stopMicrophone(); }
+    if (document.pointerLockElement) document.exitPointerLock();
+    app.keys = {};
+    showWearable({ header: 'Paused', headerIcon: 'pause', headerCat: 'INFO', meta: app.xr ? 'Press X to resume' : 'Press P to resume', rows: [] }, Infinity, 'paused');
+  } else {
+    hideWearable();
+    if (app.resumeMicAfterPause) { app.resumeMicAfterPause = false; toggleMic(); }
+  }
+}
+function togglePause() { if (app.started) setPaused(!app.paused); }
+
+// Results from ANY source (live mic, characters, typed demo) arrive here.
+Core.onResult(result => {
+  W.lastResult = result;
+  updatePresenter(result);
+  animateStrip();
+  if (!app.paused) displayKeywords(result);
+});
+
+// Panels
+const panels = { btnSettings: 'panelSettings', btnConvos: 'panelConvos', btnPipeline: 'panelPipeline' };
+function closePanels() {
+  Object.entries(panels).forEach(([b, p]) => { document.getElementById(p).classList.remove('open'); document.getElementById(b).setAttribute('aria-pressed', 'false'); });
+}
+Object.entries(panels).forEach(([b, p]) => {
+  document.getElementById(b).addEventListener('click', () => {
+    const open = !document.getElementById(p).classList.contains('open');
+    closePanels();
+    if (open) { document.getElementById(p).classList.add('open'); document.getElementById(b).setAttribute('aria-pressed', 'true'); if (document.pointerLockElement) document.exitPointerLock(); }
+  });
+});
+document.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', closePanels));
+const anyPanelOpen = () => !!document.querySelector('.panel.open');
+
+// Conversations panel content
+function buildConversationPanel() {
+  const list = document.getElementById('scenarioList');
+  SCENARIOS.forEach(s => {
+    const ch = characters.find(c => c.id === s.char);
+    const card = el('div', undefined, 'scn');
+    card.append(el('div', (s.n === '+' ? 'Extra · ' : 'Scenario ' + s.n + ' · ') + s.title + ' — ' + ch.name, 't'));
+    card.append(el('div', '“' + ch.lines[s.line] + '”', 'q'));
+    const find = el('button', 'Show me where'); find.addEventListener('click', () => { setGuide(ch); closePanels(); });
+    const play = el('button', 'Play now', 'primary'); play.addEventListener('click', () => { if (!app.started) startExperience(false); startConversation(ch, s.line); });
+    card.append(find, play); list.append(card);
+  });
+  const phrases = ["Hey, could you please pick up your school bag? We're leaving in five minutes.",
+    'Would you like to come outside and play with us?', 'Be careful, the floor is wet. Walk slowly.',
+    'Please put your shoes on. We are going to the park.', 'Um, so, yeah.'];
+  const box2 = document.getElementById('demoPhrases');
+  phrases.forEach(p => { const b = el('button', p, 'chipbtn'); b.addEventListener('click', () => runTyped(p)); box2.append(b); });
+  const input = document.getElementById('typedInput');
+  document.getElementById('typedGo').addEventListener('click', () => runTyped(input.value));
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') runTyped(input.value); });
+}
+function runTyped(text) {
+  if (!app.started) startExperience(false);
+  if (app.paused) setPaused(false);
+  setStage(1);
+  Core.processSpeech(String(text || '').slice(0, 300), { source: 'typed', speaker: 'Demo input' });
+}
+
+// Toolbar + wearable controls
+document.getElementById('btnPause').addEventListener('click', togglePause);
+document.getElementById('resumeBtn').addEventListener('click', () => setPaused(false));
+btnMic.addEventListener('click', () => { if (!app.started) startExperience(false); toggleMic(); });
+document.getElementById('btnRepeat').addEventListener('click', repeatKeywords);
+document.getElementById('btnDismiss').addEventListener('click', clearKeywords);
+
+// Keyboard
+const isTyping = e => e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA');
+addEventListener('keydown', e => {
+  if (isTyping(e) || !app.started) return;
+  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
+  app.keys[e.code] = true;
+  if (e.repeat) return;
+  switch (e.code) {
+    case 'KeyF': app.thirdPerson = !app.thirdPerson; break;
+    case 'KeyE': if (!app.paused) talkToNearest(); break;
+    case 'KeyR': repeatKeywords(); break;
+    case 'KeyX': clearKeywords(); break;
+    case 'KeyP': togglePause(); break;
+    case 'KeyM': toggleMic(); break;
+    case 'KeyH': { const l = document.getElementById('legend'); l.style.display = l.style.display === 'none' ? '' : 'none'; break; }
+    case 'Escape': closePanels(); break;
+  }
+});
+addEventListener('keyup', e => { app.keys[e.code] = false; });
+addEventListener('blur', () => { app.keys = {}; });
+
+// Mouse look: pointer lock, with click-drag fallback
+function lockPointer() {
+  if (app.xr || !app.started || app.paused || anyPanelOpen()) return;
+  try { const p = canvas.requestPointerLock(); if (p && p.catch) p.catch(() => dragHint()); } catch (e) { dragHint(); }
+}
+function dragHint() { if (!app.dragHintShown) { app.dragHintShown = true; toast('Mouse lock is not available here, so click and drag to look around.'); } }
+document.addEventListener('pointerlockerror', dragHint);
+document.addEventListener('pointerlockchange', () => {
+  app.pointerLocked = document.pointerLockElement === canvas;
+  document.getElementById('crosshair').style.display = app.pointerLocked ? 'block' : 'none';
+});
+canvas.addEventListener('click', lockPointer);
+canvas.addEventListener('mousedown', e => { if (!app.pointerLocked) { app.dragging = true; app.lastX = e.clientX; app.lastY = e.clientY; } });
+addEventListener('mouseup', () => { app.dragging = false; });
+addEventListener('mousemove', e => {
+  if (!app.started || app.xr || app.paused) return;
+  let dx = 0, dy = 0;
+  if (app.pointerLocked) { dx = e.movementX; dy = e.movementY; }
+  else if (app.dragging) { dx = e.clientX - app.lastX; dy = e.clientY - app.lastY; app.lastX = e.clientX; app.lastY = e.clientY; }
+  else return;
+  const sens = app.pointerLocked ? 0.0022 : 0.004;
+  app.yaw -= dx * sens;
+  app.pitch = Math.max(-1.3, Math.min(1.3, app.pitch - dy * sens));
+});
+canvas.addEventListener('wheel', e => {
+  if (app.xr) return;
+  e.preventDefault();
+  if (app.thirdPerson) app.tpDist = Math.max(1.6, Math.min(6, app.tpDist + Math.sign(e.deltaY) * 0.3));
+  else { app.fov = Math.max(40, Math.min(80, app.fov + Math.sign(e.deltaY) * 3)); camera.fov = app.fov; camera.updateProjectionMatrix(); }
+}, { passive: false });
+// Touch-drag look (tablets)
+canvas.addEventListener('touchstart', e => { const t = e.touches[0]; app.dragging = true; app.lastX = t.clientX; app.lastY = t.clientY; }, { passive: true });
+canvas.addEventListener('touchmove', e => { const t = e.touches[0]; app.yaw -= (t.clientX - app.lastX) * 0.005; app.pitch = Math.max(-1.3, Math.min(1.3, app.pitch - (t.clientY - app.lastY) * 0.005)); app.lastX = t.clientX; app.lastY = t.clientY; }, { passive: true });
+canvas.addEventListener('touchend', () => { app.dragging = false; });
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// Start
+function startExperience(tryLock) {
+  if (!app.started) {
+    app.started = true;
+    document.getElementById('startOverlay').style.display = 'none';
+    loadVoices();
+    showWearable({ header: 'Wearable ready', headerIcon: 'listen', headerCat: 'INFO', meta: 'Walk up to someone and press E', rows: [] }, 5, 'info');
+  }
+  if (tryLock) lockPointer();
+}
+document.getElementById('startBtn').addEventListener('click', () => startExperience(true));
+
+// WebXR session lifecycle — rig at y=0, headset supplies height (local-floor)
+renderer.xr.addEventListener('sessionstart', () => {
+  startExperience(false);
+  app.xr = true;
+  if (document.pointerLockElement) document.exitPointerLock();
+  pivot.position.set(0, 0, 0); pivot.rotation.set(0, 0, 0);
+  camera.position.set(0, 0, 0); camera.rotation.set(0, 0, 0);
+  rig.position.y = 0;
+  avatar.visible = false;
+  closePanels();
+  document.getElementById('pausedOverlay').style.display = 'none';
+  showWearable({ header: 'Wearable ready', headerIcon: 'listen', headerCat: 'INFO', meta: 'Pull trigger near a person', rows: [] }, 5, 'info');
+  followHead(0, true);
+});
+renderer.xr.addEventListener('sessionend', () => {
+  app.xr = false;
+  app.yaw = rig.rotation.y; app.pitch = 0;
+  pivot.position.y = settings.eyeHeight;
+  camera.fov = app.fov; camera.updateProjectionMatrix();
+  vrPanel.visible = false;
+  if (app.paused) document.getElementById('pausedOverlay').style.display = 'flex';
+});
+
+// Enter VR button (Three.js VRButton → genuine immersive-vr session)
+const vrButton = VRButton.createButton(renderer); // requests immersive-vr with local-floor
+vrButton.classList.add('vr-btn');
+vrButton.setAttribute('aria-label', 'Enter VR');
+document.body.appendChild(vrButton);
+
+/* ---------- Build the world ---------- */
+buildGround();
+buildSchoolBuilding();
+buildClassroomInterior();
+buildCorridor();
+buildPlayground();
+buildBoundaryAndGate();
+buildRoadAndBicycle();
+buildBackground();
+buildCharacters();
+buildConversationPanel();
+
+rig.position.set(0, 0, 15.5); // start on the playground path, facing the school
+app.yaw = 0;
+applySettings();
+updateStatusUI();
+renderWearable({ header: 'Wearable ready', headerIcon: 'listen', headerCat: 'INFO', meta: '', rows: [] });
+
+/* ---------- Main loop ---------- */
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime, now = performance.now();
+  if (app.xr) updateXRInput(dt); else updateDesktopMovement(dt);
+  if (!app.paused) { updateBicycle(dt); updateCharacters(dt, t, getPlayerPosition()); }
+  if (cueArrow.visible) cueArrow.position.y = cueBaseY + (settings.animation === 'medium' ? Math.sin(t * 1.6) * 0.05 : 0);
+  updateWearable(dt, now);
+  updateMicMeter();
+  renderer.render(scene, camera);
+});
+
+// Expose for debugging / future integration
+window.PausePointSim = { app, settings, rig, startConversation, displayKeywords, clearKeywords, characters, scene };
+</script>
+</body>
+</html>
